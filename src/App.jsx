@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 const api = async (url, options = {}) => {
   const res = await fetch(url, options);
@@ -9,6 +9,16 @@ const api = async (url, options = {}) => {
   return data;
 };
 
+const emptyUserForm = {
+  username: '',
+  password: '',
+  firstName: '',
+  lastName: '',
+  email: '',
+  phone: '',
+  userType: 'athlete'
+};
+
 function App() {
   const [status, setStatus] = useState({ loading: true, hasUsers: false });
   const [token, setToken] = useState(localStorage.getItem('token') || '');
@@ -16,7 +26,11 @@ function App() {
   const [users, setUsers] = useState([]);
   const [message, setMessage] = useState('');
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
-  const [createForm, setCreateForm] = useState({ username: '', password: '' });
+  const [createForm, setCreateForm] = useState(emptyUserForm);
+  const [editingUserId, setEditingUserId] = useState(null);
+  const [editForm, setEditForm] = useState(emptyUserForm);
+
+  const isEditing = useMemo(() => editingUserId !== null, [editingUserId]);
 
   useEffect(() => {
     api('/api/status')
@@ -70,7 +84,7 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(createForm)
       });
-      setCreateForm({ username: '', password: '' });
+      setCreateForm(emptyUserForm);
       const newStatus = await api('/api/status');
       setStatus({ loading: false, hasUsers: newStatus.hasUsers });
 
@@ -88,12 +102,57 @@ function App() {
     }
   };
 
+  const startEditing = (user) => {
+    setEditingUserId(user.id);
+    setEditForm({
+      username: user.username,
+      password: '',
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      phone: user.phone,
+      userType: user.userType
+    });
+    setMessage('');
+  };
+
+  const cancelEditing = () => {
+    setEditingUserId(null);
+    setEditForm(emptyUserForm);
+  };
+
+  const handleUpdateUser = async (e) => {
+    e.preventDefault();
+    if (!isEditing) return;
+
+    setMessage('');
+    try {
+      await api(`/api/users/${editingUserId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify(editForm)
+      });
+      await loadUsers();
+      cancelEditing();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
   const deleteUser = async (id) => {
     try {
       await api(`/api/users/${id}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` }
       });
+
+      if (editingUserId === id) {
+        cancelEditing();
+      }
+
       await loadUsers();
     } catch (err) {
       setMessage(err.message);
@@ -104,6 +163,7 @@ function App() {
     localStorage.removeItem('token');
     setToken('');
     setUsers([]);
+    cancelEditing();
     setMode('home');
   };
 
@@ -147,28 +207,126 @@ function App() {
           </div>
 
           <form onSubmit={handleCreateUser}>
+            <h3>Crea utente</h3>
             <label>
-              Nuovo username
+              Username
               <input value={createForm.username} onChange={(e) => setCreateForm({ ...createForm, username: e.target.value })} required />
             </label>
             <label>
-              Nuova password
+              Password
               <input type="password" value={createForm.password} onChange={(e) => setCreateForm({ ...createForm, password: e.target.value })} required />
+            </label>
+            <label>
+              Nome
+              <input value={createForm.firstName} onChange={(e) => setCreateForm({ ...createForm, firstName: e.target.value })} required />
+            </label>
+            <label>
+              Cognome
+              <input value={createForm.lastName} onChange={(e) => setCreateForm({ ...createForm, lastName: e.target.value })} required />
+            </label>
+            <label>
+              Email
+              <input type="email" value={createForm.email} onChange={(e) => setCreateForm({ ...createForm, email: e.target.value })} required />
+            </label>
+            <label>
+              Cellulare
+              <input value={createForm.phone} onChange={(e) => setCreateForm({ ...createForm, phone: e.target.value })} required />
+            </label>
+            <label>
+              Tipologia utente
+              <select value={createForm.userType} onChange={(e) => setCreateForm({ ...createForm, userType: e.target.value })}>
+                <option value="athlete">Atleta</option>
+                <option value="coach">Coach</option>
+              </select>
             </label>
             <button type="submit">Crea utente</button>
           </form>
 
           {token ? (
-            <ul>
-              {users.map((u) => (
-                <li key={u.id}>
-                  <span>{u.username}</span>
-                  <button onClick={() => deleteUser(u.id)}>Elimina</button>
-                </li>
-              ))}
-            </ul>
+            <>
+              {isEditing && (
+                <form onSubmit={handleUpdateUser} className="edit-form">
+                  <h3>Modifica utente #{editingUserId}</h3>
+                  <label>
+                    Username
+                    <input value={editForm.username} onChange={(e) => setEditForm({ ...editForm, username: e.target.value })} required />
+                  </label>
+                  <label>
+                    Nuova password (opzionale)
+                    <input type="password" value={editForm.password} onChange={(e) => setEditForm({ ...editForm, password: e.target.value })} />
+                  </label>
+                  <label>
+                    Nome
+                    <input value={editForm.firstName} onChange={(e) => setEditForm({ ...editForm, firstName: e.target.value })} required />
+                  </label>
+                  <label>
+                    Cognome
+                    <input value={editForm.lastName} onChange={(e) => setEditForm({ ...editForm, lastName: e.target.value })} required />
+                  </label>
+                  <label>
+                    Email
+                    <input type="email" value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} required />
+                  </label>
+                  <label>
+                    Cellulare
+                    <input value={editForm.phone} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} required />
+                  </label>
+                  <label>
+                    Tipologia utente
+                    <select value={editForm.userType} onChange={(e) => setEditForm({ ...editForm, userType: e.target.value })}>
+                      <option value="athlete">Atleta</option>
+                      <option value="coach">Coach</option>
+                    </select>
+                  </label>
+                  <div className="actions">
+                    <button type="submit">Salva modifiche</button>
+                    <button type="button" onClick={cancelEditing} className="secondary">Annulla</button>
+                  </div>
+                </form>
+              )}
+
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>Username</th>
+                      <th>Nome</th>
+                      <th>Cognome</th>
+                      <th>Email</th>
+                      <th>Cellulare</th>
+                      <th>Tipologia</th>
+                      <th>Azioni</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {users.map((u) => (
+                      <tr key={u.id}>
+                        <td>{u.id}</td>
+                        <td>{u.username}</td>
+                        <td>{u.firstName}</td>
+                        <td>{u.lastName}</td>
+                        <td>{u.email}</td>
+                        <td>{u.phone}</td>
+                        <td>{u.userType === 'coach' ? 'Coach' : 'Atleta'}</td>
+                        <td>
+                          <div className="actions">
+                            <button type="button" onClick={() => startEditing(u)}>
+                              Modifica
+                            </button>
+                            <button type="button" onClick={() => deleteUser(u.id)} className="danger">
+                              Elimina
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           ) : (
-            <p>Per vedere o eliminare utenti esistenti effettua il login dalla home.</p>
+            <p>Per vedere, modificare o eliminare utenti esistenti effettua il login dalla home.</p>
           )}
         </section>
       )}
