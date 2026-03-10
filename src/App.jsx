@@ -19,18 +19,29 @@ const emptyUserForm = {
   userType: 'athlete'
 };
 
+const parseStoredUser = () => {
+  try {
+    const raw = localStorage.getItem('user');
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+};
+
 function App() {
   const [status, setStatus] = useState({ loading: true, hasUsers: false });
   const [token, setToken] = useState(localStorage.getItem('token') || '');
+  const [currentUser, setCurrentUser] = useState(parseStoredUser());
   const [mode, setMode] = useState('home');
   const [users, setUsers] = useState([]);
   const [message, setMessage] = useState('');
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
-  const [createForm, setCreateForm] = useState(emptyUserForm);
+  const [createForm, setCreateForm] = useState({ ...emptyUserForm, userType: 'coach' });
   const [editingUserId, setEditingUserId] = useState(null);
   const [editForm, setEditForm] = useState(emptyUserForm);
 
   const isEditing = useMemo(() => editingUserId !== null, [editingUserId]);
+  const isCoachUser = currentUser?.userType === 'coach';
 
   useEffect(() => {
     api('/api/status')
@@ -66,7 +77,9 @@ function App() {
         body: JSON.stringify(loginForm)
       });
       localStorage.setItem('token', data.token);
+      localStorage.setItem('user', JSON.stringify(data.user));
       setToken(data.token);
+      setCurrentUser(data.user);
       setMode('users');
       await loadUsers(data.token);
       setLoginForm({ username: '', password: '' });
@@ -79,17 +92,23 @@ function App() {
     e.preventDefault();
     setMessage('');
     try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+
       await api('/api/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(createForm)
       });
-      setCreateForm(emptyUserForm);
+
+      setCreateForm({ ...emptyUserForm, userType: isCoachUser ? 'athlete' : 'coach' });
       const newStatus = await api('/api/status');
       setStatus({ loading: false, hasUsers: newStatus.hasUsers });
 
       if (!token && newStatus.hasUsers) {
-        setMessage('Utente creato. Ora effettua il login dalla home.');
+        setMessage('Coach iniziale creato. Ora effettua il login dalla home.');
         setMode('home');
         return;
       }
@@ -109,7 +128,7 @@ function App() {
       password: '',
       firstName: user.firstName,
       lastName: user.lastName,
-      email: user.email,
+      email: user.email || '',
       phone: user.phone,
       userType: user.userType
     });
@@ -161,7 +180,9 @@ function App() {
 
   const logout = () => {
     localStorage.removeItem('token');
+    localStorage.removeItem('user');
     setToken('');
+    setCurrentUser(null);
     setUsers([]);
     cancelEditing();
     setMode('home');
@@ -172,7 +193,7 @@ function App() {
   return (
     <main className="container">
       <h1>Piattaforma gestione utenti</h1>
-      <p className="subtitle">Home con login, oppure accesso diretto alla gestione utenti se il database è vuoto.</p>
+      <p className="subtitle">Solo il coach crea/modifica utenti. L'atleta vede/modifica solo il proprio profilo (senza username).</p>
       {message && <p className="message">{message}</p>}
 
       {mode === 'home' && (
@@ -180,8 +201,8 @@ function App() {
           <h2>Home</h2>
           {!status.hasUsers ? (
             <>
-              <p>Non ci sono utenti registrati: puoi entrare subito nella gestione utenti.</p>
-              <button onClick={() => setMode('users')}>Vai alla gestione utenti</button>
+              <p>Non ci sono utenti registrati: crea il primo utente coach.</p>
+              <button onClick={() => setMode('users')}>Configura utente iniziale</button>
             </>
           ) : (
             <form onSubmit={handleLogin}>
@@ -206,41 +227,74 @@ function App() {
             {token ? <button onClick={logout}>Logout</button> : <button onClick={() => setMode('home')}>Torna alla home</button>}
           </div>
 
-          <form onSubmit={handleCreateUser}>
-            <h3>Crea utente</h3>
-            <label>
-              Username
-              <input value={createForm.username} onChange={(e) => setCreateForm({ ...createForm, username: e.target.value })} required />
-            </label>
-            <label>
-              Password
-              <input type="password" value={createForm.password} onChange={(e) => setCreateForm({ ...createForm, password: e.target.value })} required />
-            </label>
-            <label>
-              Nome
-              <input value={createForm.firstName} onChange={(e) => setCreateForm({ ...createForm, firstName: e.target.value })} required />
-            </label>
-            <label>
-              Cognome
-              <input value={createForm.lastName} onChange={(e) => setCreateForm({ ...createForm, lastName: e.target.value })} required />
-            </label>
-            <label>
-              Email
-              <input type="email" value={createForm.email} onChange={(e) => setCreateForm({ ...createForm, email: e.target.value })} required />
-            </label>
-            <label>
-              Cellulare
-              <input value={createForm.phone} onChange={(e) => setCreateForm({ ...createForm, phone: e.target.value })} required />
-            </label>
-            <label>
-              Tipologia utente
-              <select value={createForm.userType} onChange={(e) => setCreateForm({ ...createForm, userType: e.target.value })}>
-                <option value="athlete">Atleta</option>
-                <option value="coach">Coach</option>
-              </select>
-            </label>
-            <button type="submit">Crea utente</button>
-          </form>
+          {!status.hasUsers && (
+            <form onSubmit={handleCreateUser}>
+              <h3>Crea coach iniziale</h3>
+              <label>
+                Username
+                <input value={createForm.username} onChange={(e) => setCreateForm({ ...createForm, username: e.target.value })} required />
+              </label>
+              <label>
+                Password
+                <input type="password" value={createForm.password} onChange={(e) => setCreateForm({ ...createForm, password: e.target.value })} required />
+              </label>
+              <label>
+                Nome
+                <input value={createForm.firstName} onChange={(e) => setCreateForm({ ...createForm, firstName: e.target.value })} required />
+              </label>
+              <label>
+                Cognome
+                <input value={createForm.lastName} onChange={(e) => setCreateForm({ ...createForm, lastName: e.target.value })} required />
+              </label>
+              <label>
+                Email
+                <input type="email" value={createForm.email} onChange={(e) => setCreateForm({ ...createForm, email: e.target.value })} required />
+              </label>
+              <label>
+                Cellulare
+                <input value={createForm.phone} onChange={(e) => setCreateForm({ ...createForm, phone: e.target.value })} required />
+              </label>
+              <button type="submit">Crea coach iniziale</button>
+            </form>
+          )}
+
+          {token && isCoachUser && (
+            <form onSubmit={handleCreateUser}>
+              <h3>Crea utente</h3>
+              <label>
+                Username
+                <input value={createForm.username} onChange={(e) => setCreateForm({ ...createForm, username: e.target.value })} required />
+              </label>
+              <label>
+                Password
+                <input type="password" value={createForm.password} onChange={(e) => setCreateForm({ ...createForm, password: e.target.value })} required />
+              </label>
+              <label>
+                Nome
+                <input value={createForm.firstName} onChange={(e) => setCreateForm({ ...createForm, firstName: e.target.value })} required />
+              </label>
+              <label>
+                Cognome
+                <input value={createForm.lastName} onChange={(e) => setCreateForm({ ...createForm, lastName: e.target.value })} required />
+              </label>
+              <label>
+                Email
+                <input type="email" value={createForm.email} onChange={(e) => setCreateForm({ ...createForm, email: e.target.value })} required />
+              </label>
+              <label>
+                Cellulare
+                <input value={createForm.phone} onChange={(e) => setCreateForm({ ...createForm, phone: e.target.value })} required />
+              </label>
+              <label>
+                Tipologia utente
+                <select value={createForm.userType} onChange={(e) => setCreateForm({ ...createForm, userType: e.target.value })}>
+                  <option value="athlete">Atleta</option>
+                  <option value="coach">Coach</option>
+                </select>
+              </label>
+              <button type="submit">Crea utente</button>
+            </form>
+          )}
 
           {token ? (
             <>
@@ -249,7 +303,12 @@ function App() {
                   <h3>Modifica utente #{editingUserId}</h3>
                   <label>
                     Username
-                    <input value={editForm.username} onChange={(e) => setEditForm({ ...editForm, username: e.target.value })} required />
+                    <input
+                      value={editForm.username}
+                      onChange={(e) => setEditForm({ ...editForm, username: e.target.value })}
+                      required
+                      disabled={!isCoachUser}
+                    />
                   </label>
                   <label>
                     Nuova password (opzionale)
@@ -271,13 +330,15 @@ function App() {
                     Cellulare
                     <input value={editForm.phone} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} required />
                   </label>
-                  <label>
-                    Tipologia utente
-                    <select value={editForm.userType} onChange={(e) => setEditForm({ ...editForm, userType: e.target.value })}>
-                      <option value="athlete">Atleta</option>
-                      <option value="coach">Coach</option>
-                    </select>
-                  </label>
+                  {isCoachUser && (
+                    <label>
+                      Tipologia utente
+                      <select value={editForm.userType} onChange={(e) => setEditForm({ ...editForm, userType: e.target.value })}>
+                        <option value="athlete">Atleta</option>
+                        <option value="coach">Coach</option>
+                      </select>
+                    </label>
+                  )}
                   <div className="actions">
                     <button type="submit">Salva modifiche</button>
                     <button type="button" onClick={cancelEditing} className="secondary">Annulla</button>
@@ -314,9 +375,11 @@ function App() {
                             <button type="button" onClick={() => startEditing(u)}>
                               Modifica
                             </button>
-                            <button type="button" onClick={() => deleteUser(u.id)} className="danger">
-                              Elimina
-                            </button>
+                            {isCoachUser && (
+                              <button type="button" onClick={() => deleteUser(u.id)} className="danger">
+                                Elimina
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -326,7 +389,7 @@ function App() {
               </div>
             </>
           ) : (
-            <p>Per vedere, modificare o eliminare utenti esistenti effettua il login dalla home.</p>
+            <p>Effettua il login per vedere i dati utente.</p>
           )}
         </section>
       )}

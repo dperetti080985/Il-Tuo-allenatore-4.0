@@ -31,7 +31,7 @@ const normalizeUserPayload = (payload) => ({
   password: payload.password,
   firstName: payload.firstName?.trim(),
   lastName: payload.lastName?.trim(),
-  email: payload.email?.trim().toLowerCase(),
+  email: payload.email?.trim().toLowerCase() || null,
   phone: payload.phone?.trim(),
   userType: payload.userType?.trim().toLowerCase()
 });
@@ -48,17 +48,45 @@ const validateRequiredUserFields = (user) => {
   return null;
 };
 
+const isCoach = (user) => user?.userType === 'coach';
+
 app.get('/api/status', (_req, res) => {
   const row = db.prepare('SELECT COUNT(*) AS count FROM users').get();
   res.json({ hasUsers: row.count > 0, usersCount: row.count });
 });
 
 app.post('/api/users', (req, res) => {
+  const totalUsers = db.prepare('SELECT COUNT(*) AS count FROM users').get().count;
   const user = normalizeUserPayload(req.body);
   const validationError = validateRequiredUserFields(user);
 
   if (validationError) {
     return res.status(400).json({ message: validationError });
+  }
+
+  const authHeader = req.headers.authorization;
+
+  if (totalUsers === 0) {
+    if (user.userType !== 'coach') {
+      return res.status(400).json({ message: 'Il primo utente deve essere un coach' });
+    }
+  } else {
+    if (!authHeader) {
+      return res.status(401).json({ message: 'Solo un coach autenticato può creare utenti' });
+    }
+
+    const token = authHeader.replace('Bearer ', '');
+    let loggedUser;
+
+    try {
+      loggedUser = jwt.verify(token, JWT_SECRET);
+    } catch {
+      return res.status(401).json({ message: 'Token non valido' });
+    }
+
+    if (!isCoach(loggedUser)) {
+      return res.status(403).json({ message: 'Solo un coach può creare utenti' });
+    }
   }
 
   try {
@@ -106,12 +134,32 @@ app.post('/api/login', (req, res) => {
     return res.status(401).json({ message: 'Credenziali non valide' });
   }
 
-  const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '8h' });
+  const token = jwt.sign({ id: user.id, username: user.username, userType: user.userType }, JWT_SECRET, { expiresIn: '8h' });
   res.json({ token, user });
 });
 
-app.get('/api/users', auth, (_req, res) => {
-  const users = db
+app.get('/api/users', auth, (req, res) => {
+  if (isCoach(req.user)) {
+    const users = db
+      .prepare(`
+        SELECT
+          id,
+          username,
+          first_name AS firstName,
+          last_name AS lastName,
+          email,
+          phone,
+          user_type AS userType,
+          created_at AS createdAt
+        FROM users
+        ORDER BY id DESC
+      `)
+      .all();
+
+    return res.json(users);
+  }
+
+  const currentUser = db
     .prepare(`
       SELECT
         id,
@@ -123,10 +171,81 @@ app.get('/api/users', auth, (_req, res) => {
         user_type AS userType,
         created_at AS createdAt
       FROM users
-      ORDER BY id DESC
+      WHERE id = ?
     `)
-    .all();
-  res.json(users);
+    .get(req.user.id);
+
+  if (!currentUser) {
+    return res.status(404).json({ message: 'Utente non trovato' });
+  }
+
+  return res.json([currentUser]);
+});
+
+app.put('/api/users/:id', auth, (req, res) => {
+  const id = Number(req.params.id);
+  const existingUser = db
+    .prepare('SELECT id, username, password, first_name AS firstName, last_name AS lastName, email, phone, user_type AS userType FROM users WHERE id = ?')
+    .get(id);
+
+  if (!existingUser) {
+    return res.status(404).json({ message: 'Utente non trovato' });
+  }
+
+  const requesterIsCoach = isCoach(req.user);
+  const requesterIsOwner = req.user.id === id;
+
+  if (!requesterIsCoach && !requesterIsOwner) {
+    return res.status(403).json({ message: 'Puoi modificare solo il tuo profilo' });
+  }
+
+  const payload = normalizeUserPayload(req.body);
+
+  if (!requesterIsCoach && payload.username && payload.username !== existingUser.username) {
+    return res.status(403).json({ message: 'Un atleta non può modificare la username' });
+  }
+
+  const updatedUser = {
+    username: requesterIsCoach ? payload.username : existingUser.username,
+    password: payload.password || existingUser.password,
+    firstName: payload.firstName,
+    lastName: payload.lastName,
+    email: payload.email,
+    phone: payload.phone,
+    userType: requesterIsCoach ? payload.userType : existingUser.userType
+  };
+
+  const validationError = validateRequiredUserFields(updatedUser);
+  if (validationError) {
+    return res.status(400).json({ message: validationError });
+  }
+
+  try {
+    const info = db
+      .prepare(`
+        UPDATE users
+        SET username = ?, password = ?, first_name = ?, last_name = ?, email = ?, phone = ?, user_type = ?
+        WHERE id = ?
+      `)
+      .run(
+        updatedUser.username,
+        updatedUser.password,
+        updatedUser.firstName,
+        updatedUser.lastName,
+        updatedUser.email,
+        updatedUser.phone,
+        updatedUser.userType,
+        id
+      );
+
+    if (info.changes === 0) {
+      return res.status(404).json({ message: 'Utente non trovato' });
+    }
+
+    return res.json({ ok: true });
+  } catch {
+    return res.status(409).json({ message: 'Username o email già esistente' });
+  }
 });
 
 app.put('/api/users/:id', auth, (req, res) => {
@@ -178,6 +297,10 @@ app.put('/api/users/:id', auth, (req, res) => {
 });
 
 app.delete('/api/users/:id', auth, (req, res) => {
+  if (!isCoach(req.user)) {
+    return res.status(403).json({ message: 'Solo un coach può eliminare utenti' });
+  }
+
   const id = Number(req.params.id);
   const info = db.prepare('DELETE FROM users WHERE id = ?').run(id);
 

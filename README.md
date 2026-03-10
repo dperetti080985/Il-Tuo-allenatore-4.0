@@ -4,7 +4,7 @@ Applicazione web React + Express + SQLite con:
 
 - Home con login utente.
 - Se non esistono utenti nel database, accesso diretto alla gestione utenti.
-- Gestione utenti completa con creazione, lista, modifica ed eliminazione dopo login.
+- Gestione utenti con permessi: solo coach può creare/eliminare utenti; atleta vede e modifica solo il proprio profilo (senza cambiare username).
 - Campi utente estesi: username, password, nome, cognome, email, cellulare, tipologia (coach/atleta).
 
 ## Avvio
@@ -21,3 +21,5 @@ npm run dev
 
 - Database SQLite locale: `app.db`.
 - Per semplicità le password sono salvate in chiaro (ambiente demo/sviluppo).
+
+- Migrazione database non distruttiva: all'avvio vengono aggiunte solo le colonne mancanti senza perdere i dati esistenti.
