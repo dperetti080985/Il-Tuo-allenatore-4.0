@@ -248,6 +248,54 @@ app.put('/api/users/:id', auth, (req, res) => {
   }
 });
 
+app.put('/api/users/:id', auth, (req, res) => {
+  const id = Number(req.params.id);
+  const existingUser = db.prepare('SELECT id, password FROM users WHERE id = ?').get(id);
+
+  if (!existingUser) {
+    return res.status(404).json({ message: 'Utente non trovato' });
+  }
+
+  const payload = normalizeUserPayload(req.body);
+  const updatedUser = {
+    ...payload,
+    password: payload.password || existingUser.password
+  };
+
+  const validationError = validateRequiredUserFields(updatedUser);
+
+  if (validationError) {
+    return res.status(400).json({ message: validationError });
+  }
+
+  try {
+    const info = db
+      .prepare(`
+        UPDATE users
+        SET username = ?, password = ?, first_name = ?, last_name = ?, email = ?, phone = ?, user_type = ?
+        WHERE id = ?
+      `)
+      .run(
+        updatedUser.username,
+        updatedUser.password,
+        updatedUser.firstName,
+        updatedUser.lastName,
+        updatedUser.email,
+        updatedUser.phone,
+        updatedUser.userType,
+        id
+      );
+
+    if (info.changes === 0) {
+      return res.status(404).json({ message: 'Utente non trovato' });
+    }
+
+    return res.json({ ok: true });
+  } catch {
+    return res.status(409).json({ message: 'Username o email già esistente' });
+  }
+});
+
 app.delete('/api/users/:id', auth, (req, res) => {
   if (!isCoach(req.user)) {
     return res.status(403).json({ message: 'Solo un coach può eliminare utenti' });
