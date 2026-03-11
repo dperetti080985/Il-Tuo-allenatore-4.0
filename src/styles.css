@@ -37,10 +37,15 @@ label {
 }
 
 input,
-select {
+select,
+textarea {
   padding: 10px;
   border-radius: 8px;
   border: 1px solid #d1d5db;
+}
+
+textarea {
+  min-height: 80px;
 }
 
 button {
@@ -111,4 +116,33 @@ td {
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   margin-bottom: 4px;
+}
+
+.split-panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.subcard {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.set-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(140px, 1fr));
+  gap: 8px;
+  align-items: end;
+}
+
+.compact-field {
+  display: grid;
+  gap: 4px;
+}
+
+.short-input {
+  max-width: 120px;
 }
