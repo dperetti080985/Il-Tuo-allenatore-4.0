@@ -13,6 +13,7 @@ const ATHLETE_PERFORMANCE_PROFILES = new Set(['passista', 'scalatore', 'velocist
 const TRAINING_MACRO_AREAS = new Set(['metabolico', 'neuromuscolare']);
 const TRAINING_PERIODS = new Set(['costruzione', 'specialistico', 'pre-gara', 'gara']);
 const TRAINING_METHOD_TYPES = new Set(['single', 'monthly_weekly', 'monthly_biweekly']);
+const TRAINING_MODES = new Set(['in_bici', 'in_palestra', 'a_corpo_libero']);
 const ZONE_STRESS_WEIGHTS = { Z1: 1, Z2: 2, Z3: 3, Z4: 5, Z5: 7, Z6: 9, Z7: 11 };
 
 app.use(cors());
@@ -348,7 +349,15 @@ const mapTrainingMethod = (methodRow) => {
     .all(methodRow.id)
     .map((setRow) => {
       const intervals = db
-        .prepare('SELECT id, interval_order AS intervalOrder, duration_seconds AS durationSeconds, intensity_zone AS intensityZone, rpm, rpe FROM training_method_intervals WHERE set_id = ? ORDER BY interval_order ASC')
+        .prepare(`
+          SELECT i.id, i.interval_order AS intervalOrder, i.duration_seconds AS durationSeconds, i.intensity_zone AS intensityZone, i.rpm, i.rpe,
+            i.exercise_id AS exerciseId, i.recovery_seconds AS recoverySeconds, i.description, i.overload_pct AS overloadPct,
+            e.name AS exerciseName
+          FROM training_method_intervals i
+          LEFT JOIN training_exercises e ON e.id = i.exercise_id
+          WHERE i.set_id = ?
+          ORDER BY i.interval_order ASC
+        `)
         .all(setRow.id)
         .map((i) => ({
           ...i,
@@ -384,6 +393,7 @@ const mapTrainingMethod = (methodRow) => {
     period: methodRow.period,
     notes: methodRow.notes,
     methodType: methodRow.method_type,
+    trainingMode: methodRow.training_mode || 'in_bici',
     progressionIncrementPct: methodRow.progression_increment_pct,
     progression: methodRow.progression_json ? JSON.parse(methodRow.progression_json) : null,
     sets,
@@ -412,6 +422,7 @@ const validateTrainingMethodPayload = (payload) => {
   if (!TRAINING_MACRO_AREAS.has(payload.macroArea)) return 'Macro area non valida';
   if (!TRAINING_PERIODS.has(payload.period)) return 'Periodo non valido';
   if (!TRAINING_METHOD_TYPES.has(payload.methodType)) return 'Tipologia metodo non valida';
+  if (!TRAINING_MODES.has(payload.trainingMode)) return 'Modalità allenamento non valida';
 
   if (!Array.isArray(payload.sets) || payload.sets.length === 0) {
     return 'Inserire almeno un blocco di serie';
@@ -430,11 +441,25 @@ const validateTrainingMethodPayload = (payload) => {
     for (const interval of set.intervals) {
       const durationSeconds = secondsFromParts(interval.minutes, interval.seconds);
       if (Number.isNaN(durationSeconds) || durationSeconds <= 0) return 'Durata ripetuta non valida';
-      if (interval.rpm !== null && interval.rpm !== undefined && interval.rpm !== '' && (!Number.isFinite(Number(interval.rpm)) || Number(interval.rpm) < 0)) {
-        return 'RPM non valide';
-      }
-      if (interval.rpe !== null && interval.rpe !== undefined && interval.rpe !== '' && (!Number.isFinite(Number(interval.rpe)) || Number(interval.rpe) < 0)) {
-        return 'RPE non valido';
+
+      if (payload.trainingMode === 'in_bici') {
+        if (interval.rpm !== null && interval.rpm !== undefined && interval.rpm !== '' && (!Number.isFinite(Number(interval.rpm)) || Number(interval.rpm) < 0)) {
+          return 'RPM non valide';
+        }
+        if (interval.rpe !== null && interval.rpe !== undefined && interval.rpe !== '' && (!Number.isFinite(Number(interval.rpe)) || Number(interval.rpe) < 0)) {
+          return 'RPE non valido';
+        }
+      } else {
+        const exerciseId = Number(interval.exerciseId);
+        if (!Number.isInteger(exerciseId) || exerciseId <= 0) return 'Esercizio intervallo non valido';
+        const recMinutes = Number(interval.intervalRecoveryMinutes ?? 0);
+        const recSeconds = Number(interval.intervalRecoverySeconds ?? 0);
+        if (!Number.isFinite(recMinutes) || !Number.isFinite(recSeconds) || recMinutes < 0 || recSeconds < 0 || recSeconds >= 60) {
+          return 'Recupero intervallo non valido';
+        }
+        if (interval.overloadPct !== null && interval.overloadPct !== undefined && interval.overloadPct !== '' && (!Number.isFinite(Number(interval.overloadPct)) || Number(interval.overloadPct) < 0)) {
+          return 'Sovraccarico non valido';
+        }
       }
     }
   }
@@ -1285,6 +1310,51 @@ app.put('/api/athletes/:id/taxonomy', auth, (req, res) => {
   return res.json(loadAthleteAssignments(athleteId));
 });
 
+
+app.get('/api/training-exercises', auth, (req, res) => {
+  if (!isCoach(req.user)) return res.status(403).json({ message: 'Solo i coach possono accedere agli esercizi' });
+  const rows = db.prepare('SELECT id, name, created_at AS createdAt FROM training_exercises ORDER BY name ASC').all();
+  return res.json(rows);
+});
+
+app.post('/api/training-exercises', auth, (req, res) => {
+  if (!isCoach(req.user)) return res.status(403).json({ message: 'Solo i coach possono creare esercizi' });
+  const name = req.body?.name?.trim();
+  if (!name) return res.status(400).json({ message: 'name è obbligatorio' });
+  try {
+    const info = db.prepare('INSERT INTO training_exercises (name) VALUES (?)').run(name);
+    const created = db.prepare('SELECT id, name, created_at AS createdAt FROM training_exercises WHERE id = ?').get(info.lastInsertRowid);
+    return res.status(201).json(created);
+  } catch {
+    return res.status(409).json({ message: 'Esercizio già esistente' });
+  }
+});
+
+app.put('/api/training-exercises/:id', auth, (req, res) => {
+  if (!isCoach(req.user)) return res.status(403).json({ message: 'Solo i coach possono modificare esercizi' });
+  const id = Number(req.params.id);
+  const exists = db.prepare('SELECT id FROM training_exercises WHERE id = ?').get(id);
+  if (!exists) return res.status(404).json({ message: 'Esercizio non trovato' });
+  const name = req.body?.name?.trim();
+  if (!name) return res.status(400).json({ message: 'name è obbligatorio' });
+  try {
+    db.prepare('UPDATE training_exercises SET name = ? WHERE id = ?').run(name, id);
+    return res.json(db.prepare('SELECT id, name, created_at AS createdAt FROM training_exercises WHERE id = ?').get(id));
+  } catch {
+    return res.status(409).json({ message: 'Esercizio già esistente' });
+  }
+});
+
+app.delete('/api/training-exercises/:id', auth, (req, res) => {
+  if (!isCoach(req.user)) return res.status(403).json({ message: 'Solo i coach possono eliminare esercizi' });
+  const id = Number(req.params.id);
+  const linked = db.prepare('SELECT id FROM training_method_intervals WHERE exercise_id = ? LIMIT 1').get(id);
+  if (linked) return res.status(409).json({ message: 'Esercizio associato a metodi esistenti' });
+  const info = db.prepare('DELETE FROM training_exercises WHERE id = ?').run(id);
+  if (info.changes === 0) return res.status(404).json({ message: 'Esercizio non trovato' });
+  return res.json({ ok: true });
+});
+
 app.get('/api/training-methods', auth, (req, res) => {
   if (!isCoach(req.user)) {
     return res.status(403).json({ message: 'Solo i coach possono accedere ai metodi' });
@@ -1317,10 +1387,18 @@ app.post('/api/training-methods', auth, (req, res) => {
   const foundDisciplineCount = db.prepare(`SELECT COUNT(*) AS count FROM disciplines WHERE id IN (${disciplineIds.map(() => '?').join(',')})`).get(...disciplineIds).count;
   if (foundDisciplineCount !== disciplineIds.length) return res.status(400).json({ message: 'Disciplina non trovata' });
 
+  if (payload.trainingMode !== 'in_bici') {
+    const exerciseIds = uniqueIds(payload.sets.flatMap((set) => (set.intervals || []).map((interval) => interval.exerciseId)));
+    const foundExerciseCount = exerciseIds.length > 0
+      ? db.prepare(`SELECT COUNT(*) AS count FROM training_exercises WHERE id IN (${exerciseIds.map(() => '?').join(',')})`).get(...exerciseIds).count
+      : 0;
+    if (foundExerciseCount !== exerciseIds.length) return res.status(400).json({ message: 'Esercizio non trovato' });
+  }
+
   try {
     const info = db.prepare(`
-      INSERT INTO training_methods (coach_id, name, code, macro_area, objective_detail_id, category, period, notes, method_type, progression_increment_pct, progression_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO training_methods (coach_id, name, code, macro_area, objective_detail_id, category, period, notes, method_type, training_mode, progression_increment_pct, progression_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       req.user.id,
       payload.name.trim(),
@@ -1331,6 +1409,7 @@ app.post('/api/training-methods', auth, (req, res) => {
       payload.period,
       payload.notes?.trim() || null,
       payload.methodType,
+      payload.trainingMode,
       payload.progressionIncrementPct ? Number(payload.progressionIncrementPct) : null,
       payload.progression ? JSON.stringify(payload.progression) : null
     );
@@ -1360,15 +1439,19 @@ app.post('/api/training-methods', auth, (req, res) => {
       for (let intervalIndex = 0; intervalIndex < set.intervals.length; intervalIndex += 1) {
         const interval = set.intervals[intervalIndex];
         db.prepare(`
-          INSERT INTO training_method_intervals (set_id, interval_order, duration_seconds, intensity_zone, rpm, rpe)
-          VALUES (?, ?, ?, ?, ?, ?)
+          INSERT INTO training_method_intervals (set_id, interval_order, duration_seconds, intensity_zone, rpm, rpe, exercise_id, recovery_seconds, description, overload_pct)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           setInfo.lastInsertRowid,
           intervalIndex + 1,
           secondsFromParts(interval.minutes, interval.seconds),
-          interval.intensityZone?.trim() || null,
-          interval.rpm === '' || interval.rpm === null || interval.rpm === undefined ? null : Number(interval.rpm),
-          interval.rpe === '' || interval.rpe === null || interval.rpe === undefined ? null : Number(interval.rpe)
+          payload.trainingMode === 'in_bici' ? interval.intensityZone?.trim() || null : null,
+          payload.trainingMode === 'in_bici' ? (interval.rpm === '' || interval.rpm === null || interval.rpm === undefined ? null : Number(interval.rpm)) : null,
+          payload.trainingMode === 'in_bici' ? (interval.rpe === '' || interval.rpe === null || interval.rpe === undefined ? null : Number(interval.rpe)) : null,
+          payload.trainingMode === 'in_bici' ? null : Number(interval.exerciseId),
+          payload.trainingMode === 'in_bici' ? null : secondsFromParts(interval.intervalRecoveryMinutes, interval.intervalRecoverySeconds),
+          payload.trainingMode === 'in_bici' ? null : (interval.description?.trim() || null),
+          payload.trainingMode === 'in_bici' ? null : (interval.overloadPct === '' || interval.overloadPct === null || interval.overloadPct === undefined ? null : Number(interval.overloadPct))
         );
       }
     }
@@ -1400,10 +1483,18 @@ app.put('/api/training-methods/:id', auth, (req, res) => {
   if (categoryIds.length === 0) return res.status(400).json({ message: 'Categorie non valide' });
   if (disciplineIds.length === 0) return res.status(400).json({ message: 'Discipline non valide' });
 
+  if (payload.trainingMode !== 'in_bici') {
+    const exerciseIds = uniqueIds(payload.sets.flatMap((set) => (set.intervals || []).map((interval) => interval.exerciseId)));
+    const foundExerciseCount = exerciseIds.length > 0
+      ? db.prepare(`SELECT COUNT(*) AS count FROM training_exercises WHERE id IN (${exerciseIds.map(() => '?').join(',')})`).get(...exerciseIds).count
+      : 0;
+    if (foundExerciseCount !== exerciseIds.length) return res.status(400).json({ message: 'Esercizio non trovato' });
+  }
+
   try {
     db.prepare(`
       UPDATE training_methods
-      SET name = ?, code = ?, macro_area = ?, objective_detail_id = ?, category = ?, period = ?, notes = ?, method_type = ?, progression_increment_pct = ?, progression_json = ?, updated_at = CURRENT_TIMESTAMP
+      SET name = ?, code = ?, macro_area = ?, objective_detail_id = ?, category = ?, period = ?, notes = ?, method_type = ?, training_mode = ?, progression_increment_pct = ?, progression_json = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ? AND coach_id = ?
     `).run(
       payload.name.trim(),
@@ -1414,6 +1505,7 @@ app.put('/api/training-methods/:id', auth, (req, res) => {
       payload.period,
       payload.notes?.trim() || null,
       payload.methodType,
+      payload.trainingMode,
       payload.progressionIncrementPct ? Number(payload.progressionIncrementPct) : null,
       payload.progression ? JSON.stringify(payload.progression) : null,
       methodId,
@@ -1450,13 +1542,17 @@ app.put('/api/training-methods/:id', auth, (req, res) => {
 
       for (let intervalIndex = 0; intervalIndex < set.intervals.length; intervalIndex += 1) {
         const interval = set.intervals[intervalIndex];
-        db.prepare('INSERT INTO training_method_intervals (set_id, interval_order, duration_seconds, intensity_zone, rpm, rpe) VALUES (?, ?, ?, ?, ?, ?)').run(
+        db.prepare('INSERT INTO training_method_intervals (set_id, interval_order, duration_seconds, intensity_zone, rpm, rpe, exercise_id, recovery_seconds, description, overload_pct) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
           setInfo.lastInsertRowid,
           intervalIndex + 1,
           secondsFromParts(interval.minutes, interval.seconds),
-          interval.intensityZone?.trim() || null,
-          interval.rpm === '' || interval.rpm === null || interval.rpm === undefined ? null : Number(interval.rpm),
-          interval.rpe === '' || interval.rpe === null || interval.rpe === undefined ? null : Number(interval.rpe)
+          payload.trainingMode === 'in_bici' ? interval.intensityZone?.trim() || null : null,
+          payload.trainingMode === 'in_bici' ? (interval.rpm === '' || interval.rpm === null || interval.rpm === undefined ? null : Number(interval.rpm)) : null,
+          payload.trainingMode === 'in_bici' ? (interval.rpe === '' || interval.rpe === null || interval.rpe === undefined ? null : Number(interval.rpe)) : null,
+          payload.trainingMode === 'in_bici' ? null : Number(interval.exerciseId),
+          payload.trainingMode === 'in_bici' ? null : secondsFromParts(interval.intervalRecoveryMinutes, interval.intervalRecoverySeconds),
+          payload.trainingMode === 'in_bici' ? null : (interval.description?.trim() || null),
+          payload.trainingMode === 'in_bici' ? null : (interval.overloadPct === '' || interval.overloadPct === null || interval.overloadPct === undefined ? null : Number(interval.overloadPct))
         );
       }
     }
@@ -1480,8 +1576,8 @@ app.post('/api/training-methods/:id/duplicate', auth, (req, res) => {
   const sourceMapped = mapTrainingMethod(source);
   const newCode = `${source.code}-copy-${Date.now()}`;
   const copyInfo = db.prepare(`
-    INSERT INTO training_methods (coach_id, name, code, macro_area, objective_detail_id, category, period, notes, method_type, progression_increment_pct, progression_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO training_methods (coach_id, name, code, macro_area, objective_detail_id, category, period, notes, method_type, training_mode, progression_increment_pct, progression_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     req.user.id,
     `${source.name} (Copia)`,
@@ -1492,6 +1588,7 @@ app.post('/api/training-methods/:id/duplicate', auth, (req, res) => {
     source.period,
     source.notes,
     source.method_type,
+    source.training_mode || 'in_bici',
     source.progression_increment_pct,
     source.progression_json
   );
@@ -1517,13 +1614,17 @@ app.post('/api/training-methods/:id/duplicate', auth, (req, res) => {
     );
 
     set.intervals.forEach((interval, intervalIndex) => {
-      db.prepare('INSERT INTO training_method_intervals (set_id, interval_order, duration_seconds, intensity_zone, rpm, rpe) VALUES (?, ?, ?, ?, ?, ?)').run(
+      db.prepare('INSERT INTO training_method_intervals (set_id, interval_order, duration_seconds, intensity_zone, rpm, rpe, exercise_id, recovery_seconds, description, overload_pct) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
         setInfo.lastInsertRowid,
         intervalIndex + 1,
         interval.durationSeconds,
         interval.intensityZone,
         interval.rpm,
-        interval.rpe
+        interval.rpe,
+        interval.exerciseId || null,
+        interval.recoverySeconds || null,
+        interval.description || null,
+        interval.overloadPct || null
       );
     });
   });

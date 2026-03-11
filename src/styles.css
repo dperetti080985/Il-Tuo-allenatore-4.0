@@ -195,3 +195,34 @@ td {
 .modal-zones-grid {
   margin-top: 12px;
 }
+
+.compact-selector-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.compact-selector {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.check-list {
+  max-height: 130px;
+  overflow: auto;
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.check-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.interval-description {
+  grid-column: 1 / -1;
+}

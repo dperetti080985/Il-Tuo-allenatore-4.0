@@ -133,6 +133,7 @@ db.exec(`
     period TEXT NOT NULL CHECK (period IN ('costruzione', 'specialistico', 'pre-gara', 'gara')),
     notes TEXT,
     method_type TEXT NOT NULL CHECK (method_type IN ('single', 'monthly_weekly', 'monthly_biweekly')),
+    training_mode TEXT NOT NULL DEFAULT 'in_bici' CHECK (training_mode IN ('in_bici', 'in_palestra', 'a_corpo_libero')),
     progression_increment_pct REAL,
     progression_json TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -141,6 +142,13 @@ db.exec(`
     FOREIGN KEY (objective_detail_id) REFERENCES training_objective_details(id)
   );
 `);
+
+const trainingMethodColumns = db.prepare('PRAGMA table_info(training_methods)').all();
+const existingTrainingMethodColumns = new Set(trainingMethodColumns.map((column) => column.name));
+
+if (!existingTrainingMethodColumns.has('training_mode')) {
+  db.exec("ALTER TABLE training_methods ADD COLUMN training_mode TEXT NOT NULL DEFAULT 'in_bici';");
+}
 
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS training_methods_coach_code_idx ON training_methods(coach_id, code);');
 
@@ -164,7 +172,38 @@ db.exec(`
     intensity_zone TEXT,
     rpm INTEGER,
     rpe REAL,
+    exercise_id INTEGER,
+    recovery_seconds INTEGER,
+    description TEXT,
+    overload_pct REAL,
     FOREIGN KEY (set_id) REFERENCES training_method_sets(id) ON DELETE CASCADE
+  );
+`);
+
+const trainingIntervalColumns = db.prepare('PRAGMA table_info(training_method_intervals)').all();
+const existingTrainingIntervalColumns = new Set(trainingIntervalColumns.map((column) => column.name));
+
+if (!existingTrainingIntervalColumns.has('exercise_id')) {
+  db.exec('ALTER TABLE training_method_intervals ADD COLUMN exercise_id INTEGER;');
+}
+
+if (!existingTrainingIntervalColumns.has('recovery_seconds')) {
+  db.exec('ALTER TABLE training_method_intervals ADD COLUMN recovery_seconds INTEGER;');
+}
+
+if (!existingTrainingIntervalColumns.has('description')) {
+  db.exec('ALTER TABLE training_method_intervals ADD COLUMN description TEXT;');
+}
+
+if (!existingTrainingIntervalColumns.has('overload_pct')) {
+  db.exec('ALTER TABLE training_method_intervals ADD COLUMN overload_pct REAL;');
+}
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS training_exercises (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 `);
 
