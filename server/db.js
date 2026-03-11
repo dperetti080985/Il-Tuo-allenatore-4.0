@@ -99,4 +99,63 @@ db.exec(`
   );
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS training_objective_details (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    macro_area TEXT NOT NULL CHECK (macro_area IN ('metabolico', 'neuromuscolare')),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS training_methods (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    coach_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    code TEXT NOT NULL,
+    macro_area TEXT NOT NULL CHECK (macro_area IN ('metabolico', 'neuromuscolare')),
+    objective_detail_id INTEGER NOT NULL,
+    category TEXT NOT NULL,
+    period TEXT NOT NULL CHECK (period IN ('costruzione', 'specialistico', 'pre-gara', 'gara')),
+    notes TEXT,
+    method_type TEXT NOT NULL CHECK (method_type IN ('single', 'monthly_weekly', 'monthly_biweekly')),
+    progression_increment_pct REAL,
+    progression_json TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (coach_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (objective_detail_id) REFERENCES training_objective_details(id)
+  );
+`);
+
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS training_methods_coach_code_idx ON training_methods(coach_id, code);');
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS training_method_sets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    training_method_id INTEGER NOT NULL,
+    set_order INTEGER NOT NULL,
+    series_count INTEGER NOT NULL,
+    recovery_seconds INTEGER NOT NULL,
+    FOREIGN KEY (training_method_id) REFERENCES training_methods(id) ON DELETE CASCADE
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS training_method_intervals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    set_id INTEGER NOT NULL,
+    interval_order INTEGER NOT NULL,
+    duration_seconds INTEGER NOT NULL,
+    intensity_zone TEXT,
+    rpm INTEGER,
+    rpe REAL,
+    FOREIGN KEY (set_id) REFERENCES training_method_sets(id) ON DELETE CASCADE
+  );
+`);
+
+db.exec('CREATE INDEX IF NOT EXISTS training_method_sets_method_idx ON training_method_sets(training_method_id, set_order);');
+db.exec('CREATE INDEX IF NOT EXISTS training_method_intervals_set_idx ON training_method_intervals(set_id, interval_order);');
+
 export default db;

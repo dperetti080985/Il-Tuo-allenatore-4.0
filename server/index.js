@@ -8,6 +8,10 @@ const PORT = 3001;
 const JWT_SECRET = 'local-dev-secret-change-me';
 const USER_TYPES = new Set(['coach', 'athlete']);
 
+const TRAINING_MACRO_AREAS = new Set(['metabolico', 'neuromuscolare']);
+const TRAINING_PERIODS = new Set(['costruzione', 'specialistico', 'pre-gara', 'gara']);
+const TRAINING_METHOD_TYPES = new Set(['single', 'monthly_weekly', 'monthly_biweekly']);
+
 app.use(cors());
 app.use(express.json());
 
@@ -200,6 +204,94 @@ const getCoachUnreadMap = (coachId) => {
   }
 
   return unreadMap;
+};
+
+
+const secondsFromParts = (minutes, seconds) => {
+  const m = Number(minutes ?? 0);
+  const sec = Number(seconds ?? 0);
+  if (!Number.isFinite(m) || !Number.isFinite(sec) || m < 0 || sec < 0 || sec >= 60) return Number.NaN;
+  return Math.round(m * 60 + sec);
+};
+
+const mapTrainingMethod = (methodRow) => {
+  const objective = db
+    .prepare('SELECT id, name, macro_area AS macroArea FROM training_objective_details WHERE id = ?')
+    .get(methodRow.objective_detail_id);
+
+  const sets = db
+    .prepare('SELECT id, set_order AS setOrder, series_count AS seriesCount, recovery_seconds AS recoverySeconds FROM training_method_sets WHERE training_method_id = ? ORDER BY set_order ASC')
+    .all(methodRow.id)
+    .map((setRow) => {
+      const intervals = db
+        .prepare('SELECT id, interval_order AS intervalOrder, duration_seconds AS durationSeconds, intensity_zone AS intensityZone, rpm, rpe FROM training_method_intervals WHERE set_id = ? ORDER BY interval_order ASC')
+        .all(setRow.id)
+        .map((i) => ({
+          ...i,
+          minutes: Math.floor(i.durationSeconds / 60),
+          seconds: i.durationSeconds % 60
+        }));
+
+      return { ...setRow, intervals };
+    });
+
+  return {
+    id: methodRow.id,
+    coachId: methodRow.coach_id,
+    name: methodRow.name,
+    code: methodRow.code,
+    macroArea: methodRow.macro_area,
+    objectiveDetailId: methodRow.objective_detail_id,
+    objectiveDetailName: objective?.name || null,
+    category: methodRow.category,
+    period: methodRow.period,
+    notes: methodRow.notes,
+    methodType: methodRow.method_type,
+    progressionIncrementPct: methodRow.progression_increment_pct,
+    progression: methodRow.progression_json ? JSON.parse(methodRow.progression_json) : null,
+    sets,
+    createdAt: methodRow.created_at,
+    updatedAt: methodRow.updated_at
+  };
+};
+
+const validateTrainingMethodPayload = (payload) => {
+  const required = ['name', 'code', 'macroArea', 'objectiveDetailId', 'category', 'period', 'methodType'];
+  for (const field of required) {
+    if (!payload[field] && payload[field] !== 0) return `${field} è obbligatorio`;
+  }
+
+  if (!TRAINING_MACRO_AREAS.has(payload.macroArea)) return 'Macro area non valida';
+  if (!TRAINING_PERIODS.has(payload.period)) return 'Periodo non valido';
+  if (!TRAINING_METHOD_TYPES.has(payload.methodType)) return 'Tipologia metodo non valida';
+
+  if (!Array.isArray(payload.sets) || payload.sets.length === 0) {
+    return 'Inserire almeno un blocco di serie';
+  }
+
+  for (const set of payload.sets) {
+    const seriesCount = Number(set.seriesCount);
+    const recoveryMinutes = Number(set.recoveryMinutes ?? 0);
+    const recoverySeconds = Number(set.recoverySeconds ?? 0);
+    if (!Number.isInteger(seriesCount) || seriesCount <= 0) return 'Numero serie non valido';
+    if (!Number.isFinite(recoveryMinutes) || !Number.isFinite(recoverySeconds) || recoveryMinutes < 0 || recoverySeconds < 0 || recoverySeconds >= 60) {
+      return 'Recupero non valido';
+    }
+
+    if (!Array.isArray(set.intervals) || set.intervals.length === 0) return 'Ogni blocco deve avere almeno una ripetuta';
+    for (const interval of set.intervals) {
+      const durationSeconds = secondsFromParts(interval.minutes, interval.seconds);
+      if (Number.isNaN(durationSeconds) || durationSeconds <= 0) return 'Durata ripetuta non valida';
+      if (interval.rpm !== null && interval.rpm !== undefined && interval.rpm !== '' && (!Number.isFinite(Number(interval.rpm)) || Number(interval.rpm) < 0)) {
+        return 'RPM non valide';
+      }
+      if (interval.rpe !== null && interval.rpe !== undefined && interval.rpe !== '' && (!Number.isFinite(Number(interval.rpe)) || Number(interval.rpe) < 0)) {
+        return 'RPE non valido';
+      }
+    }
+  }
+
+  return null;
 };
 
 
@@ -648,6 +740,165 @@ app.patch('/api/athletes/:id/profile-history/seen', auth, (req, res) => {
   `).run(req.user.id, athleteId, lastProfileId);
 
   return res.json({ ok: true, athleteId, lastSeenProfileId: lastProfileId });
+});
+
+
+app.get('/api/training-objective-details', auth, (req, res) => {
+  if (!isCoach(req.user)) {
+    return res.status(403).json({ message: 'Solo i coach possono accedere all\'anagrafica obiettivi' });
+  }
+
+  const rows = db
+    .prepare('SELECT id, name, macro_area AS macroArea, created_at AS createdAt FROM training_objective_details ORDER BY macro_area ASC, name ASC')
+    .all();
+  return res.json(rows);
+});
+
+app.post('/api/training-objective-details', auth, (req, res) => {
+  if (!isCoach(req.user)) {
+    return res.status(403).json({ message: 'Solo i coach possono creare obiettivi' });
+  }
+
+  const name = req.body?.name?.trim();
+  const macroArea = req.body?.macroArea?.trim().toLowerCase();
+  if (!name || !macroArea) {
+    return res.status(400).json({ message: 'name e macroArea sono obbligatori' });
+  }
+  if (!TRAINING_MACRO_AREAS.has(macroArea)) {
+    return res.status(400).json({ message: 'Macro area non valida' });
+  }
+
+  try {
+    const info = db.prepare('INSERT INTO training_objective_details (name, macro_area) VALUES (?, ?)').run(name, macroArea);
+    const created = db.prepare('SELECT id, name, macro_area AS macroArea, created_at AS createdAt FROM training_objective_details WHERE id = ?').get(info.lastInsertRowid);
+    return res.status(201).json(created);
+  } catch {
+    return res.status(409).json({ message: 'Dettaglio obiettivo già esistente' });
+  }
+});
+
+app.get('/api/training-methods', auth, (req, res) => {
+  if (!isCoach(req.user)) {
+    return res.status(403).json({ message: 'Solo i coach possono accedere ai metodi' });
+  }
+
+  const rows = db.prepare('SELECT * FROM training_methods WHERE coach_id = ? ORDER BY created_at DESC, id DESC').all(req.user.id);
+  return res.json(rows.map(mapTrainingMethod));
+});
+
+app.post('/api/training-methods', auth, (req, res) => {
+  if (!isCoach(req.user)) {
+    return res.status(403).json({ message: 'Solo i coach possono creare metodi' });
+  }
+
+  const payload = req.body || {};
+  const validationError = validateTrainingMethodPayload(payload);
+  if (validationError) return res.status(400).json({ message: validationError });
+
+  const objective = db.prepare('SELECT id FROM training_objective_details WHERE id = ?').get(Number(payload.objectiveDetailId));
+  if (!objective) return res.status(400).json({ message: 'Dettaglio obiettivo non trovato' });
+
+  try {
+    const info = db.prepare(`
+      INSERT INTO training_methods (coach_id, name, code, macro_area, objective_detail_id, category, period, notes, method_type, progression_increment_pct, progression_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      req.user.id,
+      payload.name.trim(),
+      payload.code.trim(),
+      payload.macroArea,
+      Number(payload.objectiveDetailId),
+      payload.category.trim(),
+      payload.period,
+      payload.notes?.trim() || null,
+      payload.methodType,
+      payload.progressionIncrementPct ? Number(payload.progressionIncrementPct) : null,
+      payload.progression ? JSON.stringify(payload.progression) : null
+    );
+
+    for (let setIndex = 0; setIndex < payload.sets.length; setIndex += 1) {
+      const set = payload.sets[setIndex];
+      const recovery = secondsFromParts(set.recoveryMinutes, set.recoverySeconds);
+      const setInfo = db.prepare('INSERT INTO training_method_sets (training_method_id, set_order, series_count, recovery_seconds) VALUES (?, ?, ?, ?)').run(
+        info.lastInsertRowid,
+        setIndex + 1,
+        Number(set.seriesCount),
+        recovery
+      );
+
+      for (let intervalIndex = 0; intervalIndex < set.intervals.length; intervalIndex += 1) {
+        const interval = set.intervals[intervalIndex];
+        db.prepare(`
+          INSERT INTO training_method_intervals (set_id, interval_order, duration_seconds, intensity_zone, rpm, rpe)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(
+          setInfo.lastInsertRowid,
+          intervalIndex + 1,
+          secondsFromParts(interval.minutes, interval.seconds),
+          interval.intensityZone?.trim() || null,
+          interval.rpm === '' || interval.rpm === null || interval.rpm === undefined ? null : Number(interval.rpm),
+          interval.rpe === '' || interval.rpe === null || interval.rpe === undefined ? null : Number(interval.rpe)
+        );
+      }
+    }
+
+    const created = db.prepare('SELECT * FROM training_methods WHERE id = ?').get(info.lastInsertRowid);
+    return res.status(201).json(mapTrainingMethod(created));
+  } catch {
+    return res.status(409).json({ message: 'Codice metodo già esistente per questo coach' });
+  }
+});
+
+app.post('/api/training-methods/:id/duplicate', auth, (req, res) => {
+  if (!isCoach(req.user)) {
+    return res.status(403).json({ message: 'Solo i coach possono duplicare metodi' });
+  }
+
+  const methodId = Number(req.params.id);
+  const source = db.prepare('SELECT * FROM training_methods WHERE id = ? AND coach_id = ?').get(methodId, req.user.id);
+  if (!source) return res.status(404).json({ message: 'Metodo non trovato' });
+
+  const sourceMapped = mapTrainingMethod(source);
+  const newCode = `${source.code}-copy-${Date.now()}`;
+  const copyInfo = db.prepare(`
+    INSERT INTO training_methods (coach_id, name, code, macro_area, objective_detail_id, category, period, notes, method_type, progression_increment_pct, progression_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    req.user.id,
+    `${source.name} (Copia)`,
+    newCode,
+    source.macro_area,
+    source.objective_detail_id,
+    source.category,
+    source.period,
+    source.notes,
+    source.method_type,
+    source.progression_increment_pct,
+    source.progression_json
+  );
+
+  sourceMapped.sets.forEach((set, setIndex) => {
+    const setInfo = db.prepare('INSERT INTO training_method_sets (training_method_id, set_order, series_count, recovery_seconds) VALUES (?, ?, ?, ?)').run(
+      copyInfo.lastInsertRowid,
+      setIndex + 1,
+      set.seriesCount,
+      set.recoverySeconds
+    );
+
+    set.intervals.forEach((interval, intervalIndex) => {
+      db.prepare('INSERT INTO training_method_intervals (set_id, interval_order, duration_seconds, intensity_zone, rpm, rpe) VALUES (?, ?, ?, ?, ?, ?)').run(
+        setInfo.lastInsertRowid,
+        intervalIndex + 1,
+        interval.durationSeconds,
+        interval.intensityZone,
+        interval.rpm,
+        interval.rpe
+      );
+    });
+  });
+
+  const created = db.prepare('SELECT * FROM training_methods WHERE id = ?').get(copyInfo.lastInsertRowid);
+  return res.status(201).json(mapTrainingMethod(created));
 });
 
 app.delete('/api/users/:id', auth, (req, res) => {

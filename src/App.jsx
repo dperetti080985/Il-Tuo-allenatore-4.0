@@ -54,6 +54,46 @@ const athleteFieldLabels = {
   vo2MaxHr: 'Frequenza cardiaca al VO2 max'
 };
 
+
+const macroAreas = [
+  { value: 'metabolico', label: 'Metabolico' },
+  { value: 'neuromuscolare', label: 'Neuromuscolare' }
+];
+
+const trainingPeriods = [
+  { value: 'costruzione', label: 'Costruzione' },
+  { value: 'specialistico', label: 'Periodo specialistico' },
+  { value: 'pre-gara', label: 'Periodo pre-gara' },
+  { value: 'gara', label: 'Periodo gara' }
+];
+
+const trainingMethodTypes = [
+  { value: 'single', label: 'Singolo allenamento' },
+  { value: 'monthly_weekly', label: 'Progressione mensile (1 volta/settimana)' },
+  { value: 'monthly_biweekly', label: 'Progressione mensile (settimana sì/no)' }
+];
+
+const emptyMethodSet = {
+  seriesCount: 4,
+  recoveryMinutes: 4,
+  recoverySeconds: 0,
+  intervals: [{ minutes: 1, seconds: 0, intensityZone: 'Z3', rpm: 90, rpe: '' }]
+};
+
+const emptyTrainingMethodForm = {
+  name: '',
+  code: '',
+  macroArea: 'metabolico',
+  objectiveDetailId: '',
+  category: '',
+  period: 'costruzione',
+  notes: '',
+  methodType: 'single',
+  progressionIncrementPct: 5,
+  progression: { baseWeekLoadPct: 100, week2Pct: 105, week3Pct: 110, week4DeloadPct: 95 },
+  sets: [emptyMethodSet]
+};
+
 const zoneRules = [
   { zone: 'Z1', min: 0, max: 55 },
   { zone: 'Z2', min: 56, max: 75 },
@@ -152,6 +192,10 @@ function App() {
   const [athleteHistory, setAthleteHistory] = useState([]);
   const [selectedAthleteId, setSelectedAthleteId] = useState(null);
   const [editingSnapshotId, setEditingSnapshotId] = useState(null);
+  const [trainingObjectiveDetails, setTrainingObjectiveDetails] = useState([]);
+  const [trainingMethods, setTrainingMethods] = useState([]);
+  const [objectiveForm, setObjectiveForm] = useState({ name: '', macroArea: 'metabolico' });
+  const [trainingMethodForm, setTrainingMethodForm] = useState(emptyTrainingMethodForm);
 
   const isEditing = useMemo(() => editingUserId !== null, [editingUserId]);
   const isCoachUser = currentUser?.userType === 'coach';
@@ -207,6 +251,60 @@ function App() {
     }
   };
 
+
+  const loadTrainingCatalog = async (authToken = token) => {
+    const [details, methods] = await Promise.all([
+      api('/api/training-objective-details', { headers: { Authorization: `Bearer ${authToken}` } }),
+      api('/api/training-methods', { headers: { Authorization: `Bearer ${authToken}` } })
+    ]);
+    setTrainingObjectiveDetails(details);
+    setTrainingMethods(methods);
+  };
+
+  const handleCreateObjectiveDetail = async (e) => {
+    e.preventDefault();
+    setMessage('');
+    try {
+      await api('/api/training-objective-details', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(objectiveForm)
+      });
+      setObjectiveForm({ name: '', macroArea: objectiveForm.macroArea });
+      await loadTrainingCatalog();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const handleCreateTrainingMethod = async (e) => {
+    e.preventDefault();
+    setMessage('');
+    try {
+      await api('/api/training-methods', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(trainingMethodForm)
+      });
+      setTrainingMethodForm({ ...emptyTrainingMethodForm, objectiveDetailId: trainingMethodForm.objectiveDetailId });
+      await loadTrainingCatalog();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const duplicateTrainingMethod = async (id) => {
+    try {
+      await api(`/api/training-methods/${id}/duplicate`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      await loadTrainingCatalog();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
   useEffect(() => {
     if (token && (mode === 'users-list' || mode === 'profile')) {
       loadUsers().catch((err) => setMessage(err.message));
@@ -218,6 +316,12 @@ function App() {
       loadAthleteHistory().catch((err) => setMessage(err.message));
     }
   }, [mode, token, athleteId]);
+
+  useEffect(() => {
+    if (token && isCoachUser && mode === 'training-methods') {
+      loadTrainingCatalog().catch((err) => setMessage(err.message));
+    }
+  }, [mode, token, isCoachUser]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -511,6 +615,7 @@ function App() {
               <button onClick={() => setMode('dashboard')}>Home</button>
               <button onClick={() => setMode(isCoachUser ? 'users-list' : 'profile')}>{isCoachUser ? 'Gestione utenti' : 'Gestione mio utente'}</button>
               {!isCoachUser && <button onClick={() => setMode('athlete-profile')}>Profilo atleta</button>}
+              {isCoachUser && <button onClick={() => setMode('training-methods')}>Metodi allenamento</button>}
             </div>
           </section>
 
@@ -564,6 +669,90 @@ function App() {
                   </div>
                 </>
               )}
+            </section>
+          )}
+
+
+          {mode === 'training-methods' && isCoachUser && (
+            <section className="card">
+              <h2>Anagrafica metodi di allenamento</h2>
+              <form onSubmit={handleCreateObjectiveDetail}>
+                <h3>Dettaglio obiettivo</h3>
+                <label>Nome dettaglio obiettivo<input value={objectiveForm.name} onChange={(e) => setObjectiveForm({ ...objectiveForm, name: e.target.value })} required /></label>
+                <label>Macro area
+                  <select value={objectiveForm.macroArea} onChange={(e) => setObjectiveForm({ ...objectiveForm, macroArea: e.target.value })}>
+                    {macroAreas.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                  </select>
+                </label>
+                <button type="submit">Aggiungi dettaglio obiettivo</button>
+              </form>
+
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>ID</th><th>Dettaglio</th><th>Macro area</th></tr></thead>
+                  <tbody>
+                    {trainingObjectiveDetails.map((detail) => (
+                      <tr key={detail.id}><td>{detail.id}</td><td>{detail.name}</td><td>{detail.macroArea}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <form onSubmit={handleCreateTrainingMethod}>
+                <h3>Nuovo metodo</h3>
+                <label>Nome<input value={trainingMethodForm.name} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, name: e.target.value })} required /></label>
+                <label>Codice<input value={trainingMethodForm.code} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, code: e.target.value })} required /></label>
+                <label>Macro area
+                  <select value={trainingMethodForm.macroArea} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, macroArea: e.target.value })}>
+                    {macroAreas.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                  </select>
+                </label>
+                <label>Dettaglio obiettivo
+                  <select value={trainingMethodForm.objectiveDetailId} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, objectiveDetailId: e.target.value })} required>
+                    <option value="">Seleziona...</option>
+                    {trainingObjectiveDetails.filter((d) => d.macroArea === trainingMethodForm.macroArea).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  </select>
+                </label>
+                <label>Categoria<input value={trainingMethodForm.category} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, category: e.target.value })} required /></label>
+                <label>Periodo
+                  <select value={trainingMethodForm.period} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, period: e.target.value })}>
+                    {trainingPeriods.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                  </select>
+                </label>
+                <label>Tipologia
+                  <select value={trainingMethodForm.methodType} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, methodType: e.target.value })}>
+                    {trainingMethodTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                  </select>
+                </label>
+                <label>Incremento % settimanale<input type="number" step="0.1" value={trainingMethodForm.progressionIncrementPct} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, progressionIncrementPct: e.target.value })} /></label>
+                <label>Note<textarea value={trainingMethodForm.notes} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, notes: e.target.value })} /></label>
+                <p>Blocco base: {trainingMethodForm.sets[0].seriesCount} serie, recupero {trainingMethodForm.sets[0].recoveryMinutes}:{String(trainingMethodForm.sets[0].recoverySeconds).padStart(2, '0')}</p>
+                <button type="submit">Salva metodo</button>
+              </form>
+
+              <h3>Metodi salvati</h3>
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>Nome</th><th>Codice</th><th>Obiettivo</th><th>Periodo</th><th>Tipologia</th><th>Dettaglio</th><th>Azioni</th></tr></thead>
+                  <tbody>
+                    {trainingMethods.map((method) => (
+                      <tr key={method.id}>
+                        <td>{method.name}</td>
+                        <td>{method.code}</td>
+                        <td>{method.macroArea} / {method.objectiveDetailName}</td>
+                        <td>{method.period}</td>
+                        <td>{method.methodType}</td>
+                        <td>
+                          {method.sets.map((set) => (
+                            <div key={set.id}>{set.seriesCount} serie, rec {Math.floor(set.recoverySeconds / 60)}:{String(set.recoverySeconds % 60).padStart(2, '0')} - {set.intervals.map((i) => `${i.minutes}m${i.seconds}s ${i.intensityZone || '-'} rpm ${i.rpm || '-'} rpe ${i.rpe || '-'}`).join(' | ')}</div>
+                          ))}
+                        </td>
+                        <td><button type="button" onClick={() => duplicateTrainingMethod(method.id)}>Duplica</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </section>
           )}
 
