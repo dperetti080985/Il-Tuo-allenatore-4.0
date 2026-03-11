@@ -196,6 +196,14 @@ const formatZoneFormFromZones = (zones = []) => {
   return next;
 };
 
+const sortSnapshotsByDateDesc = (snapshots = []) => (
+  [...snapshots].sort((a, b) => {
+    const dateDiff = new Date(b.recordedAt).getTime() - new Date(a.recordedAt).getTime();
+    if (dateDiff !== 0) return dateDiff;
+    return (b.id ?? 0) - (a.id ?? 0);
+  })
+);
+
 const parseStoredUser = () => {
   try {
     const raw = localStorage.getItem('user');
@@ -275,6 +283,7 @@ function App() {
   const [athleteDisciplineIds, setAthleteDisciplineIds] = useState([]);
   const [athleteProfileMeta, setAthleteProfileMeta] = useState(emptyAthleteProfileMeta);
   const [coachZoneConfig, setCoachZoneConfig] = useState(zoneRules);
+  const [zoneModalSnapshot, setZoneModalSnapshot] = useState(null);
   const [autoZonesPreview, setAutoZonesPreview] = useState(computeAutoZones(null, null));
 
   const isEditing = useMemo(() => editingUserId !== null, [editingUserId]);
@@ -309,7 +318,8 @@ function App() {
       api(`/api/athletes/${id}/profile-meta`, { headers: { Authorization: `Bearer ${authToken}` } }),
       api(`/api/coaches/zone-config`, { headers: { Authorization: `Bearer ${authToken}` } })
     ]);
-    setAthleteHistory(data);
+    const sortedHistory = sortSnapshotsByDateDesc(data);
+    setAthleteHistory(sortedHistory);
     setAthleteCategoryIds(taxonomy.categoryIds || []);
     setAthleteDisciplineIds(taxonomy.disciplineIds || []);
     setAthleteProfileMeta({
@@ -318,8 +328,8 @@ function App() {
     });
     setCoachZoneConfig(zoneConfig.zones || zoneRules);
 
-    if (data.length > 0) {
-      const latest = data[0];
+    if (sortedHistory.length > 0) {
+      const latest = sortedHistory[0];
       setAthleteForm({
         recordedAt: new Date().toISOString().slice(0, 10),
         heightCm: latest.heightCm ?? '',
@@ -339,9 +349,11 @@ function App() {
         vo2MaxHr: latest.vo2MaxHr ?? ''
       });
       setZoneForm(formatZoneFormFromZones(latest.zones));
+      setAutoZonesPreview(latest.zones?.length ? latest.zones : computeAutoZones(null, null));
     } else {
       setAthleteForm({ ...emptyAthleteForm, recordedAt: new Date().toISOString().slice(0, 10) });
       setZoneForm(emptyZoneForm);
+      setAutoZonesPreview(computeAutoZones(null, null));
     }
   };
 
@@ -861,6 +873,7 @@ function App() {
       vo2MaxHr: item.vo2MaxHr ?? ''
     });
     setZoneForm(formatZoneFormFromZones(item.zones));
+    setAutoZonesPreview(item.zones?.length ? item.zones : computeAutoZones(null, null));
   };
 
   const cancelSnapshotEditing = () => {
@@ -1507,15 +1520,17 @@ function App() {
                       <table>
                         <thead><tr><th>Zona</th><th>FC min</th><th>FC max</th><th>W min</th><th>W max</th></tr></thead>
                         <tbody>
-                          {autoZonesPreview.map((zone) => (
+                          {zoneRules.map((rule) => {
+                            const zone = autoZonesPreview.find((current) => current.zone === rule.zone) || { zone: rule.zone, hr: null, power: null };
+                            return (
                             <tr key={zone.zone}>
                               <td>{zone.zone}</td>
-                              <td><input type="number" step="1" value={zoneForm[zone.zone].hr.min} onChange={(e) => setZoneForm({ ...zoneForm, [zone.zone]: { ...zoneForm[zone.zone], hr: { ...zoneForm[zone.zone].hr, min: e.target.value } } })} disabled={!zone.hr} /></td>
-                              <td><input type="number" step="1" value={zoneForm[zone.zone].hr.max} onChange={(e) => setZoneForm({ ...zoneForm, [zone.zone]: { ...zoneForm[zone.zone], hr: { ...zoneForm[zone.zone].hr, max: e.target.value } } })} disabled={!zone.hr || zone.hr.max === null} placeholder={zone.hr?.max === null ? '+' : ''} /></td>
-                              <td><input type="number" step="1" value={zoneForm[zone.zone].power.min} onChange={(e) => setZoneForm({ ...zoneForm, [zone.zone]: { ...zoneForm[zone.zone], power: { ...zoneForm[zone.zone].power, min: e.target.value } } })} disabled={!zone.power} /></td>
-                              <td><input type="number" step="1" value={zoneForm[zone.zone].power.max} onChange={(e) => setZoneForm({ ...zoneForm, [zone.zone]: { ...zoneForm[zone.zone], power: { ...zoneForm[zone.zone].power, max: e.target.value } } })} disabled={!zone.power || zone.power.max === null} placeholder={zone.power?.max === null ? '+' : ''} /></td>
+                              <td><input type="number" step="1" value={zoneForm[zone.zone].hr.min} onChange={(e) => setZoneForm({ ...zoneForm, [zone.zone]: { ...zoneForm[zone.zone], hr: { ...zoneForm[zone.zone].hr, min: e.target.value } } })} /></td>
+                              <td><input type="number" step="1" value={zoneForm[zone.zone].hr.max} onChange={(e) => setZoneForm({ ...zoneForm, [zone.zone]: { ...zoneForm[zone.zone], hr: { ...zoneForm[zone.zone].hr, max: e.target.value } } })} placeholder={zone.hr?.max === null ? '+' : ''} /></td>
+                              <td><input type="number" step="1" value={zoneForm[zone.zone].power.min} onChange={(e) => setZoneForm({ ...zoneForm, [zone.zone]: { ...zoneForm[zone.zone], power: { ...zoneForm[zone.zone].power, min: e.target.value } } })} /></td>
+                              <td><input type="number" step="1" value={zoneForm[zone.zone].power.max} onChange={(e) => setZoneForm({ ...zoneForm, [zone.zone]: { ...zoneForm[zone.zone], power: { ...zoneForm[zone.zone].power, max: e.target.value } } })} placeholder={zone.power?.max === null ? '+' : ''} /></td>
                             </tr>
-                          ))}
+                          );})}
                         </tbody>
                       </table>
                     </div>
@@ -1534,11 +1549,30 @@ function App() {
                       <thead><tr><th>Data</th><th>Peso</th><th>FC riposo</th><th>FC soglia</th><th>Potenza soglia</th><th>W/kg</th><th>Zone (FC / Watt)</th><th>Azioni</th></tr></thead>
                       <tbody>
                         {athleteHistory.map((item) => (
-                          <tr key={item.id}><td>{item.recordedAt}</td><td>{item.weightKg ?? '-'}</td><td>{item.restingHr ?? '-'}</td><td>{item.thresholdHr ?? '-'}</td><td>{item.thresholdPowerW ?? '-'}</td><td>{item.powerToWeight ?? '-'}</td><td><div className="zones-grid">{item.zones.map((zone) => <div key={zone.zone}><strong>{zone.zone}</strong><span>FC {zone.hr ? `${zone.hr.min}-${zone.hr.max ?? '+'}` : '-'}</span><span>W {zone.power ? `${zone.power.min}-${zone.power.max ?? '+'}` : '-'}</span></div>)}</div></td><td><div className="actions"><button type="button" onClick={() => startSnapshotEditing(item)}>Modifica</button><button type="button" className="danger" onClick={() => deleteSnapshot(item.id)}>Elimina</button></div></td></tr>
+                          <tr key={item.id}><td>{item.recordedAt}</td><td>{item.weightKg ?? '-'}</td><td>{item.restingHr ?? '-'}</td><td>{item.thresholdHr ?? '-'}</td><td>{item.thresholdPowerW ?? '-'}</td><td>{item.powerToWeight ?? '-'}</td><td><button type="button" className="secondary" onClick={() => setZoneModalSnapshot(item)}>Visualizza</button></td><td><div className="actions"><button type="button" onClick={() => startSnapshotEditing(item)}>Modifica</button><button type="button" className="danger" onClick={() => deleteSnapshot(item.id)}>Elimina</button></div></td></tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
+                  {zoneModalSnapshot && (
+                    <div className="modal-backdrop" role="dialog" aria-modal="true">
+                      <div className="modal-card">
+                        <div className="row">
+                          <h4>Zone snapshot del {zoneModalSnapshot.recordedAt}</h4>
+                          <button type="button" className="secondary" onClick={() => setZoneModalSnapshot(null)}>Chiudi</button>
+                        </div>
+                        <div className="zones-grid modal-zones-grid">
+                          {(zoneModalSnapshot.zones || []).map((zone) => (
+                            <div key={`modal-zone-${zone.zone}`}>
+                              <strong>{zone.zone}</strong>
+                              <span>Frequenza: {zone.hr ? `${zone.hr.min}-${zone.hr.max ?? '+'}` : '-'}</span>
+                              <span>BAT/Watt: {zone.power ? `${zone.power.min}-${zone.power.max ?? '+'}` : '-'}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </>
               )}
             </section>
