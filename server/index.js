@@ -67,14 +67,40 @@ const ZONE_RULES = [
 
 const toRounded = (value) => Math.round(value);
 
-const computeZones = (thresholdHr, thresholdPower) =>
-  ZONE_RULES.map((rule) => {
-    const hr = thresholdHr
-      ? {
-          min: toRounded((thresholdHr * rule.min) / 100),
-          max: rule.max === null ? null : toRounded((thresholdHr * rule.max) / 100)
-        }
-      : null;
+const computeHeartRateZones = (thresholdHr, maxHr, restingHr) => {
+  if (!thresholdHr) return null;
+
+  const thresholdMaxByZone = Object.fromEntries(
+    ZONE_RULES.map((rule) => [rule.zone, rule.max === null ? null : toRounded((thresholdHr * rule.max) / 100)])
+  );
+
+  return ZONE_RULES.map((rule, index) => {
+    const previousRule = ZONE_RULES[index - 1];
+    const previousMax = previousRule ? thresholdMaxByZone[previousRule.zone] : null;
+    const fallbackMin = toRounded((thresholdHr * rule.min) / 100);
+
+    let min = index === 0
+      ? (restingHr ? restingHr + 10 : fallbackMin)
+      : (previousMax !== null ? previousMax + 1 : fallbackMin);
+
+    let max = rule.max === null ? (maxHr ?? null) : thresholdMaxByZone[rule.zone];
+    if (maxHr && max !== null) {
+      max = Math.min(max, maxHr);
+    }
+
+    if (max !== null && min > max) {
+      min = max;
+    }
+
+    return { min, max };
+  });
+};
+
+const computeZones = (thresholdHr, thresholdPower, maxHr, restingHr) => {
+  const hrZones = computeHeartRateZones(thresholdHr, maxHr, restingHr);
+
+  return ZONE_RULES.map((rule, index) => {
+    const hr = hrZones ? hrZones[index] : null;
 
     const power = thresholdPower
       ? {
@@ -85,6 +111,7 @@ const computeZones = (thresholdHr, thresholdPower) =>
 
     return { zone: rule.zone, hr, power };
   });
+};
 
 const parsePositiveNumber = (value) => {
   if (value === null || value === undefined || value === '') {
@@ -152,7 +179,7 @@ const normalizeZoneOverride = (payload) => {
 
 const buildProfileResponse = (row) => {
   const zoneOverrides = row.zones_override_json ? JSON.parse(row.zones_override_json) : {};
-  const autoZones = computeZones(row.threshold_hr, row.threshold_power_w);
+  const autoZones = computeZones(row.threshold_hr, row.threshold_power_w, row.max_hr, row.resting_hr);
   const zones = autoZones.map((z) => ({
     ...z,
     hr: zoneOverrides?.[z.zone]?.hr || z.hr,
@@ -165,6 +192,7 @@ const buildProfileResponse = (row) => {
     recordedAt: row.recorded_at,
     heightCm: row.height_cm,
     weightKg: row.weight_kg,
+    restingHr: row.resting_hr,
     aerobicHr: row.aerobic_hr,
     maxHr: row.max_hr,
     thresholdHr: row.threshold_hr,
@@ -566,6 +594,7 @@ app.post('/api/athletes/:id/profile-history', auth, (req, res) => {
   const numericFields = {
     heightCm: parsePositiveNumber(payload.heightCm),
     weightKg: parsePositiveNumber(payload.weightKg),
+    restingHr: parsePositiveNumber(payload.restingHr),
     aerobicHr: parsePositiveNumber(payload.aerobicHr),
     maxHr: parsePositiveNumber(payload.maxHr),
     thresholdHr: parsePositiveNumber(payload.thresholdHr),
@@ -596,6 +625,7 @@ app.post('/api/athletes/:id/profile-history', auth, (req, res) => {
         recorded_at,
         height_cm,
         weight_kg,
+        resting_hr,
         aerobic_hr,
         max_hr,
         threshold_hr,
@@ -608,13 +638,14 @@ app.post('/api/athletes/:id/profile-history', auth, (req, res) => {
         vo2_max_power_w,
         vo2_max_hr,
         zones_override_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     .run(
       athleteId,
       recordedAt,
       numericFields.heightCm,
       numericFields.weightKg,
+      numericFields.restingHr,
       numericFields.aerobicHr,
       numericFields.maxHr,
       numericFields.thresholdHr,
@@ -666,6 +697,7 @@ app.put('/api/athletes/:id/profile-history/:snapshotId', auth, (req, res) => {
   const numericFields = {
     heightCm: parsePositiveNumber(payload.heightCm),
     weightKg: parsePositiveNumber(payload.weightKg),
+    restingHr: parsePositiveNumber(payload.restingHr),
     aerobicHr: parsePositiveNumber(payload.aerobicHr),
     maxHr: parsePositiveNumber(payload.maxHr),
     thresholdHr: parsePositiveNumber(payload.thresholdHr),
@@ -695,6 +727,7 @@ app.put('/api/athletes/:id/profile-history/:snapshotId', auth, (req, res) => {
       recorded_at = ?,
       height_cm = ?,
       weight_kg = ?,
+      resting_hr = ?,
       aerobic_hr = ?,
       max_hr = ?,
       threshold_hr = ?,
@@ -712,6 +745,7 @@ app.put('/api/athletes/:id/profile-history/:snapshotId', auth, (req, res) => {
     recordedAt,
     numericFields.heightCm,
     numericFields.weightKg,
+    numericFields.restingHr,
     numericFields.aerobicHr,
     numericFields.maxHr,
     numericFields.thresholdHr,

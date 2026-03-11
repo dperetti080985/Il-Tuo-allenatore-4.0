@@ -23,6 +23,7 @@ const emptyAthleteForm = {
   recordedAt: new Date().toISOString().slice(0, 10),
   heightCm: '',
   weightKg: '',
+  restingHr: '',
   aerobicHr: '',
   maxHr: '',
   thresholdHr: '',
@@ -41,6 +42,7 @@ const athleteFieldLabels = {
   recordedAt: 'Data rilevazione',
   heightCm: 'Altezza (cm)',
   weightKg: 'Peso (kg)',
+  restingHr: 'FC a riposo',
   aerobicHr: 'FC aerobica',
   maxHr: 'FC max',
   thresholdHr: 'FC soglia',
@@ -119,12 +121,43 @@ const emptyZoneForm = zoneRules.reduce((acc, rule) => {
   return acc;
 }, {});
 
-const computeAutoZones = (thresholdHr, thresholdPowerW) =>
-  zoneRules.map((rule) => ({
+const computeHeartRateZones = (thresholdHr, maxHr, restingHr) => {
+  if (!thresholdHr) return null;
+
+  const thresholdMaxByZone = Object.fromEntries(
+    zoneRules.map((rule) => [rule.zone, rule.max === null ? null : toRounded((thresholdHr * rule.max) / 100)])
+  );
+
+  return zoneRules.map((rule, index) => {
+    const prevZone = zoneRules[index - 1];
+    const prevMax = prevZone ? thresholdMaxByZone[prevZone.zone] : null;
+    const fallbackMin = toRounded((thresholdHr * rule.min) / 100);
+
+    let min = index === 0
+      ? (restingHr ? restingHr + 10 : fallbackMin)
+      : (prevMax !== null ? prevMax + 1 : fallbackMin);
+
+    let max = rule.max === null ? (maxHr ?? null) : thresholdMaxByZone[rule.zone];
+    if (maxHr && max !== null) {
+      max = Math.min(max, maxHr);
+    }
+
+    if (max !== null && min > max) {
+      min = max;
+    }
+
+    return { min, max };
+  });
+};
+
+const computeAutoZones = (thresholdHr, thresholdPowerW, maxHr, restingHr) => {
+  const hrZones = computeHeartRateZones(thresholdHr, maxHr, restingHr);
+  return zoneRules.map((rule, index) => ({
     zone: rule.zone,
-    hr: thresholdHr ? { min: toRounded((thresholdHr * rule.min) / 100), max: rule.max === null ? null : toRounded((thresholdHr * rule.max) / 100) } : null,
+    hr: hrZones ? hrZones[index] : null,
     power: thresholdPowerW ? { min: toRounded((thresholdPowerW * rule.min) / 100), max: rule.max === null ? null : toRounded((thresholdPowerW * rule.max) / 100) } : null
   }));
+};
 
 const formatZoneFormFromZones = (zones = []) => {
   const next = JSON.parse(JSON.stringify(emptyZoneForm));
@@ -248,6 +281,7 @@ function App() {
         recordedAt: new Date().toISOString().slice(0, 10),
         heightCm: latest.heightCm ?? '',
         weightKg: latest.weightKg ?? '',
+        restingHr: latest.restingHr ?? '',
         aerobicHr: latest.aerobicHr ?? '',
         maxHr: latest.maxHr ?? '',
         thresholdHr: latest.thresholdHr ?? '',
@@ -631,6 +665,7 @@ function App() {
       recordedAt: item.recordedAt,
       heightCm: item.heightCm ?? '',
       weightKg: item.weightKg ?? '',
+      restingHr: item.restingHr ?? '',
       aerobicHr: item.aerobicHr ?? '',
       maxHr: item.maxHr ?? '',
       thresholdHr: item.thresholdHr ?? '',
@@ -670,7 +705,12 @@ function App() {
 
 
   const handleAutoCalculateZones = () => {
-    const calculated = computeAutoZones(toNullableNumber(athleteForm.thresholdHr), toNullableNumber(athleteForm.thresholdPowerW));
+    const calculated = computeAutoZones(
+      toNullableNumber(athleteForm.thresholdHr),
+      toNullableNumber(athleteForm.thresholdPowerW),
+      toNullableNumber(athleteForm.maxHr),
+      toNullableNumber(athleteForm.restingHr)
+    );
     setAutoZonesPreview(calculated);
     setZoneForm(formatZoneFormFromZones(calculated));
   };
@@ -1126,10 +1166,10 @@ function App() {
                   <TrainingChart history={athleteHistory} metricKey="thresholdPowerW" title="Andamento potenza soglia" color="#ef4444" />
                   <div className="table-wrap">
                     <table>
-                      <thead><tr><th>Data</th><th>Altezza</th><th>Peso</th><th>FC Soglia</th><th>Potenza Soglia</th><th>W/kg</th><th>VO2 max</th><th>Potenza VO2 max</th><th>FC VO2 max</th><th>Zone</th><th>Azioni</th></tr></thead>
+                      <thead><tr><th>Data</th><th>Altezza</th><th>Peso</th><th>FC riposo</th><th>FC Soglia</th><th>Potenza Soglia</th><th>W/kg</th><th>VO2 max</th><th>Potenza VO2 max</th><th>FC VO2 max</th><th>Zone</th><th>Azioni</th></tr></thead>
                       <tbody>
                         {athleteHistory.map((item) => (
-                          <tr key={item.id}><td>{item.recordedAt}</td><td>{item.heightCm ?? '-'}</td><td>{item.weightKg ?? '-'}</td><td>{item.thresholdHr ?? '-'}</td><td>{item.thresholdPowerW ?? '-'}</td><td>{item.powerToWeight ?? '-'}</td><td>{item.vo2Max ?? '-'}</td><td>{item.vo2MaxPowerW ?? '-'}</td><td>{item.vo2MaxHr ?? '-'}</td><td>{item.zones.map((zone) => <div key={zone.zone}>{zone.zone}: FC {zone.hr ? `${zone.hr.min}-${zone.hr.max ?? '+'}` : '-'} | W {zone.power ? `${zone.power.min}-${zone.power.max ?? '+'}` : '-'}</div>)}</td><td><div className="actions"><button type="button" onClick={() => startSnapshotEditing(item)}>Modifica</button><button type="button" className="danger" onClick={() => deleteSnapshot(item.id)}>Elimina</button></div></td></tr>
+                          <tr key={item.id}><td>{item.recordedAt}</td><td>{item.heightCm ?? '-'}</td><td>{item.weightKg ?? '-'}</td><td>{item.restingHr ?? '-'}</td><td>{item.thresholdHr ?? '-'}</td><td>{item.thresholdPowerW ?? '-'}</td><td>{item.powerToWeight ?? '-'}</td><td>{item.vo2Max ?? '-'}</td><td>{item.vo2MaxPowerW ?? '-'}</td><td>{item.vo2MaxHr ?? '-'}</td><td>{item.zones.map((zone) => <div key={zone.zone}>{zone.zone}: FC {zone.hr ? `${zone.hr.min}-${zone.hr.max ?? '+'}` : '-'} | W {zone.power ? `${zone.power.min}-${zone.power.max ?? '+'}` : '-'}</div>)}</td><td><div className="actions"><button type="button" onClick={() => startSnapshotEditing(item)}>Modifica</button><button type="button" className="danger" onClick={() => deleteSnapshot(item.id)}>Elimina</button></div></td></tr>
                         ))}
                       </tbody>
                     </table>
