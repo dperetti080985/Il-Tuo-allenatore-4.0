@@ -30,7 +30,10 @@ const emptyAthleteForm = {
   maxPowerW: '',
   cp2MinW: '',
   cp5MinW: '',
-  cp20MinW: ''
+  cp20MinW: '',
+  vo2Max: '',
+  vo2MaxPowerW: '',
+  vo2MaxHr: ''
 };
 
 
@@ -45,7 +48,10 @@ const athleteFieldLabels = {
   maxPowerW: 'Potenza max (W)',
   cp2MinW: 'CP 2 min (W)',
   cp5MinW: 'CP 5 min (W)',
-  cp20MinW: 'CP 20 min (W)'
+  cp20MinW: 'CP 20 min (W)',
+  vo2Max: 'VO2 max (ml/kg/min)',
+  vo2MaxPowerW: 'Potenza al VO2 max (W)',
+  vo2MaxHr: 'Frequenza cardiaca al VO2 max'
 };
 
 const zoneRules = [
@@ -145,6 +151,7 @@ function App() {
   const [zoneForm, setZoneForm] = useState(emptyZoneForm);
   const [athleteHistory, setAthleteHistory] = useState([]);
   const [selectedAthleteId, setSelectedAthleteId] = useState(null);
+  const [editingSnapshotId, setEditingSnapshotId] = useState(null);
 
   const isEditing = useMemo(() => editingUserId !== null, [editingUserId]);
   const isCoachUser = currentUser?.userType === 'coach';
@@ -188,7 +195,10 @@ function App() {
         maxPowerW: latest.maxPowerW ?? '',
         cp2MinW: latest.cp2MinW ?? '',
         cp5MinW: latest.cp5MinW ?? '',
-        cp20MinW: latest.cp20MinW ?? ''
+        cp20MinW: latest.cp20MinW ?? '',
+        vo2Max: latest.vo2Max ?? '',
+        vo2MaxPowerW: latest.vo2MaxPowerW ?? '',
+        vo2MaxHr: latest.vo2MaxHr ?? ''
       });
       setZoneForm(formatZoneFormFromZones(latest.zones));
     } else {
@@ -342,8 +352,13 @@ function App() {
     });
 
     try {
-      await api(`/api/athletes/${athleteId}/profile-history`, {
-        method: 'POST',
+      const method = editingSnapshotId ? 'PUT' : 'POST';
+      const endpoint = editingSnapshotId
+        ? `/api/athletes/${athleteId}/profile-history/${editingSnapshotId}`
+        : `/api/athletes/${athleteId}/profile-history`;
+
+      await api(endpoint, {
+        method,
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`
@@ -351,7 +366,50 @@ function App() {
         body: JSON.stringify({ ...payload, zonesOverride })
       });
       await loadAthleteHistory(athleteId);
-      setMessage('Snapshot atletico salvato.');
+      setEditingSnapshotId(null);
+      setMessage(editingSnapshotId ? 'Snapshot atletico aggiornato.' : 'Snapshot atletico salvato.');
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const startSnapshotEditing = (item) => {
+    setEditingSnapshotId(item.id);
+    setAthleteForm({
+      recordedAt: item.recordedAt,
+      heightCm: item.heightCm ?? '',
+      weightKg: item.weightKg ?? '',
+      aerobicHr: item.aerobicHr ?? '',
+      maxHr: item.maxHr ?? '',
+      thresholdHr: item.thresholdHr ?? '',
+      thresholdPowerW: item.thresholdPowerW ?? '',
+      maxPowerW: item.maxPowerW ?? '',
+      cp2MinW: item.cp2MinW ?? '',
+      cp5MinW: item.cp5MinW ?? '',
+      cp20MinW: item.cp20MinW ?? '',
+      vo2Max: item.vo2Max ?? '',
+      vo2MaxPowerW: item.vo2MaxPowerW ?? '',
+      vo2MaxHr: item.vo2MaxHr ?? ''
+    });
+    setZoneForm(formatZoneFormFromZones(item.zones));
+  };
+
+  const cancelSnapshotEditing = () => {
+    setEditingSnapshotId(null);
+    loadAthleteHistory(athleteId).catch((err) => setMessage(err.message));
+  };
+
+  const deleteSnapshot = async (snapshotId) => {
+    try {
+      await api(`/api/athletes/${athleteId}/profile-history/${snapshotId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (editingSnapshotId === snapshotId) {
+        setEditingSnapshotId(null);
+      }
+      await loadAthleteHistory(athleteId);
+      setMessage('Snapshot eliminato.');
     } catch (err) {
       setMessage(err.message);
     }
@@ -401,6 +459,9 @@ function App() {
 
   const usersTitle = isCoachUser ? 'Gestione utenti' : 'Gestione profilo';
   const autoZonesPreview = computeAutoZones(toNullableNumber(athleteForm.thresholdHr), toNullableNumber(athleteForm.thresholdPowerW));
+  const currentPowerToWeight = toNullableNumber(athleteForm.thresholdPowerW) && toNullableNumber(athleteForm.weightKg)
+    ? (toNullableNumber(athleteForm.thresholdPowerW) / toNullableNumber(athleteForm.weightKg)).toFixed(2)
+    : '';
 
   if (status.loading) return <main className="container">Caricamento...</main>;
 
@@ -523,6 +584,11 @@ function App() {
                       </label>
                     ))}
 
+                    <label>
+                      Watt/kg (calcolato in automatico da peso e potenza soglia)
+                      <input type="number" step="0.01" value={currentPowerToWeight} readOnly />
+                    </label>
+
                     <h4>Zone allenamento (calcolate automaticamente, modificabili)</h4>
                     <div className="table-wrap">
                       <table>
@@ -541,7 +607,10 @@ function App() {
                       </table>
                     </div>
 
-                    <button type="submit">Salva snapshot</button>
+                    <div className="actions">
+                      <button type="submit">{editingSnapshotId ? 'Aggiorna snapshot' : 'Salva snapshot'}</button>
+                      {editingSnapshotId && <button type="button" className="secondary" onClick={cancelSnapshotEditing}>Annulla modifica</button>}
+                    </div>
                   </form>
 
                   <h3>Storico inserimenti</h3>
@@ -549,10 +618,10 @@ function App() {
                   <TrainingChart history={athleteHistory} metricKey="thresholdPowerW" title="Andamento potenza soglia" color="#ef4444" />
                   <div className="table-wrap">
                     <table>
-                      <thead><tr><th>Data</th><th>Altezza</th><th>Peso</th><th>FC Soglia</th><th>Potenza Soglia</th><th>Zone</th></tr></thead>
+                      <thead><tr><th>Data</th><th>Altezza</th><th>Peso</th><th>FC Soglia</th><th>Potenza Soglia</th><th>W/kg</th><th>VO2 max</th><th>Potenza VO2 max</th><th>FC VO2 max</th><th>Zone</th><th>Azioni</th></tr></thead>
                       <tbody>
                         {athleteHistory.map((item) => (
-                          <tr key={item.id}><td>{item.recordedAt}</td><td>{item.heightCm ?? '-'}</td><td>{item.weightKg ?? '-'}</td><td>{item.thresholdHr ?? '-'}</td><td>{item.thresholdPowerW ?? '-'}</td><td>{item.zones.map((zone) => <div key={zone.zone}>{zone.zone}: FC {zone.hr ? `${zone.hr.min}-${zone.hr.max ?? '+'}` : '-'} | W {zone.power ? `${zone.power.min}-${zone.power.max ?? '+'}` : '-'}</div>)}</td></tr>
+                          <tr key={item.id}><td>{item.recordedAt}</td><td>{item.heightCm ?? '-'}</td><td>{item.weightKg ?? '-'}</td><td>{item.thresholdHr ?? '-'}</td><td>{item.thresholdPowerW ?? '-'}</td><td>{item.powerToWeight ?? '-'}</td><td>{item.vo2Max ?? '-'}</td><td>{item.vo2MaxPowerW ?? '-'}</td><td>{item.vo2MaxHr ?? '-'}</td><td>{item.zones.map((zone) => <div key={zone.zone}>{zone.zone}: FC {zone.hr ? `${zone.hr.min}-${zone.hr.max ?? '+'}` : '-'} | W {zone.power ? `${zone.power.min}-${zone.power.max ?? '+'}` : '-'}</div>)}</td><td><div className="actions"><button type="button" onClick={() => startSnapshotEditing(item)}>Modifica</button><button type="button" className="danger" onClick={() => deleteSnapshot(item.id)}>Elimina</button></div></td></tr>
                         ))}
                       </tbody>
                     </table>

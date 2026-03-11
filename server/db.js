@@ -61,11 +61,29 @@ db.exec(`
     cp_2_min_w INTEGER,
     cp_5_min_w INTEGER,
     cp_20_min_w INTEGER,
+    vo2_max REAL,
+    vo2_max_power_w INTEGER,
+    vo2_max_hr INTEGER,
     zones_override_json TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
 `);
+
+const athleteProfileColumns = db.prepare('PRAGMA table_info(athlete_profiles)').all();
+const existingAthleteProfileColumns = new Set(athleteProfileColumns.map((column) => column.name));
+
+if (!existingAthleteProfileColumns.has('vo2_max')) {
+  db.exec('ALTER TABLE athlete_profiles ADD COLUMN vo2_max REAL;');
+}
+
+if (!existingAthleteProfileColumns.has('vo2_max_power_w')) {
+  db.exec('ALTER TABLE athlete_profiles ADD COLUMN vo2_max_power_w INTEGER;');
+}
+
+if (!existingAthleteProfileColumns.has('vo2_max_hr')) {
+  db.exec('ALTER TABLE athlete_profiles ADD COLUMN vo2_max_hr INTEGER;');
+}
 
 db.exec('CREATE INDEX IF NOT EXISTS athlete_profiles_user_idx ON athlete_profiles(user_id, recorded_at DESC, id DESC);');
 
