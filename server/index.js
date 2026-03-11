@@ -94,6 +94,19 @@ const parsePositiveNumber = (value) => {
   return numeric;
 };
 
+const parseNonNegativeNumber = (value) => {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) {
+    return Number.NaN;
+  }
+
+  return numeric;
+};
+
 const normalizeZoneOverride = (payload) => {
   if (!payload) return null;
 
@@ -105,8 +118,8 @@ const normalizeZoneOverride = (payload) => {
     result[zoneRule.zone] = {};
 
     if (zonePayload.hr) {
-      const hrMin = parsePositiveNumber(zonePayload.hr.min);
-      const hrMax = parsePositiveNumber(zonePayload.hr.max);
+      const hrMin = parseNonNegativeNumber(zonePayload.hr.min);
+      const hrMax = parseNonNegativeNumber(zonePayload.hr.max);
       if (Number.isNaN(hrMin) || (zonePayload.hr.max !== null && Number.isNaN(hrMax))) {
         return { error: `Override FC non valido per ${zoneRule.zone}` };
       }
@@ -117,8 +130,8 @@ const normalizeZoneOverride = (payload) => {
     }
 
     if (zonePayload.power) {
-      const powerMin = parsePositiveNumber(zonePayload.power.min);
-      const powerMax = parsePositiveNumber(zonePayload.power.max);
+      const powerMin = parseNonNegativeNumber(zonePayload.power.min);
+      const powerMax = parseNonNegativeNumber(zonePayload.power.max);
       if (Number.isNaN(powerMin) || (zonePayload.power.max !== null && Number.isNaN(powerMax))) {
         return { error: `Override potenza non valido per ${zoneRule.zone}` };
       }
@@ -155,6 +168,10 @@ const buildProfileResponse = (row) => {
     cp2MinW: row.cp_2_min_w,
     cp5MinW: row.cp_5_min_w,
     cp20MinW: row.cp_20_min_w,
+    vo2Max: row.vo2_max,
+    vo2MaxPowerW: row.vo2_max_power_w,
+    vo2MaxHr: row.vo2_max_hr,
+    powerToWeight: row.threshold_power_w && row.weight_kg ? Number((row.threshold_power_w / row.weight_kg).toFixed(2)) : null,
     zones,
     zonesOverride: zoneOverrides,
     createdAt: row.created_at
@@ -429,7 +446,10 @@ app.post('/api/athletes/:id/profile-history', auth, (req, res) => {
     maxPowerW: parsePositiveNumber(payload.maxPowerW),
     cp2MinW: parsePositiveNumber(payload.cp2MinW),
     cp5MinW: parsePositiveNumber(payload.cp5MinW),
-    cp20MinW: parsePositiveNumber(payload.cp20MinW)
+    cp20MinW: parsePositiveNumber(payload.cp20MinW),
+    vo2Max: parsePositiveNumber(payload.vo2Max),
+    vo2MaxPowerW: parsePositiveNumber(payload.vo2MaxPowerW),
+    vo2MaxHr: parsePositiveNumber(payload.vo2MaxHr)
   };
 
   const invalidField = Object.entries(numericFields).find(([, value]) => Number.isNaN(value));
@@ -457,8 +477,11 @@ app.post('/api/athletes/:id/profile-history', auth, (req, res) => {
         cp_2_min_w,
         cp_5_min_w,
         cp_20_min_w,
+        vo2_max,
+        vo2_max_power_w,
+        vo2_max_hr,
         zones_override_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     .run(
       athleteId,
@@ -473,6 +496,9 @@ app.post('/api/athletes/:id/profile-history', auth, (req, res) => {
       numericFields.cp2MinW,
       numericFields.cp5MinW,
       numericFields.cp20MinW,
+      numericFields.vo2Max,
+      numericFields.vo2MaxPowerW,
+      numericFields.vo2MaxHr,
       JSON.stringify(zonesOverrideResult?.data || {})
     );
 
@@ -480,6 +506,120 @@ app.post('/api/athletes/:id/profile-history', auth, (req, res) => {
   return res.status(201).json(buildProfileResponse(created));
 });
 
+
+
+app.put('/api/athletes/:id/profile-history/:snapshotId', auth, (req, res) => {
+  const athleteId = Number(req.params.id);
+  const snapshotId = Number(req.params.snapshotId);
+
+  if (!canAccessAthlete(req.user, athleteId)) {
+    return res.status(403).json({ message: 'Non autorizzato' });
+  }
+
+  const athlete = db.prepare('SELECT id, user_type AS userType FROM users WHERE id = ?').get(athleteId);
+  if (!athlete) {
+    return res.status(404).json({ message: 'Utente non trovato' });
+  }
+
+  if (athlete.userType !== 'athlete') {
+    return res.status(400).json({ message: 'Il profilo atletico è disponibile solo per utenti atleta' });
+  }
+
+  const existing = db.prepare('SELECT * FROM athlete_profiles WHERE id = ? AND user_id = ?').get(snapshotId, athleteId);
+  if (!existing) {
+    return res.status(404).json({ message: 'Snapshot non trovato' });
+  }
+
+  const payload = req.body || {};
+  const recordedAt = payload.recordedAt?.trim();
+  if (!recordedAt) {
+    return res.status(400).json({ message: 'La data di inserimento è obbligatoria' });
+  }
+
+  const numericFields = {
+    heightCm: parsePositiveNumber(payload.heightCm),
+    weightKg: parsePositiveNumber(payload.weightKg),
+    aerobicHr: parsePositiveNumber(payload.aerobicHr),
+    maxHr: parsePositiveNumber(payload.maxHr),
+    thresholdHr: parsePositiveNumber(payload.thresholdHr),
+    thresholdPowerW: parsePositiveNumber(payload.thresholdPowerW),
+    maxPowerW: parsePositiveNumber(payload.maxPowerW),
+    cp2MinW: parsePositiveNumber(payload.cp2MinW),
+    cp5MinW: parsePositiveNumber(payload.cp5MinW),
+    cp20MinW: parsePositiveNumber(payload.cp20MinW),
+    vo2Max: parsePositiveNumber(payload.vo2Max),
+    vo2MaxPowerW: parsePositiveNumber(payload.vo2MaxPowerW),
+    vo2MaxHr: parsePositiveNumber(payload.vo2MaxHr)
+  };
+
+  const invalidField = Object.entries(numericFields).find(([, value]) => Number.isNaN(value));
+  if (invalidField) {
+    return res.status(400).json({ message: `Valore non valido per ${invalidField[0]}` });
+  }
+
+  const zonesOverrideResult = normalizeZoneOverride(payload.zonesOverride);
+  if (zonesOverrideResult?.error) {
+    return res.status(400).json({ message: zonesOverrideResult.error });
+  }
+
+  db.prepare(`
+    UPDATE athlete_profiles
+    SET
+      recorded_at = ?,
+      height_cm = ?,
+      weight_kg = ?,
+      aerobic_hr = ?,
+      max_hr = ?,
+      threshold_hr = ?,
+      threshold_power_w = ?,
+      max_power_w = ?,
+      cp_2_min_w = ?,
+      cp_5_min_w = ?,
+      cp_20_min_w = ?,
+      vo2_max = ?,
+      vo2_max_power_w = ?,
+      vo2_max_hr = ?,
+      zones_override_json = ?
+    WHERE id = ? AND user_id = ?
+  `).run(
+    recordedAt,
+    numericFields.heightCm,
+    numericFields.weightKg,
+    numericFields.aerobicHr,
+    numericFields.maxHr,
+    numericFields.thresholdHr,
+    numericFields.thresholdPowerW,
+    numericFields.maxPowerW,
+    numericFields.cp2MinW,
+    numericFields.cp5MinW,
+    numericFields.cp20MinW,
+    numericFields.vo2Max,
+    numericFields.vo2MaxPowerW,
+    numericFields.vo2MaxHr,
+    JSON.stringify(zonesOverrideResult?.data || {}),
+    snapshotId,
+    athleteId
+  );
+
+  const updated = db.prepare('SELECT * FROM athlete_profiles WHERE id = ?').get(snapshotId);
+  return res.json(buildProfileResponse(updated));
+});
+
+app.delete('/api/athletes/:id/profile-history/:snapshotId', auth, (req, res) => {
+  const athleteId = Number(req.params.id);
+  const snapshotId = Number(req.params.snapshotId);
+
+  if (!canAccessAthlete(req.user, athleteId)) {
+    return res.status(403).json({ message: 'Non autorizzato' });
+  }
+
+  const info = db.prepare('DELETE FROM athlete_profiles WHERE id = ? AND user_id = ?').run(snapshotId, athleteId);
+  if (info.changes === 0) {
+    return res.status(404).json({ message: 'Snapshot non trovato' });
+  }
+
+  return res.json({ ok: true });
+});
 
 app.patch('/api/athletes/:id/profile-history/seen', auth, (req, res) => {
   if (!isCoach(req.user)) {
