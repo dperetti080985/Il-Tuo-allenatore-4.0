@@ -150,6 +150,20 @@ const performanceProfiles = [
 
 const zoneStressWeights = { Z1: 1, Z2: 2, Z3: 3, Z4: 5, Z5: 7, Z6: 9, Z7: 11 };
 
+const toTimeInputValue = (minutes, seconds) => {
+  const safeMinutes = Math.max(0, Number(minutes) || 0);
+  const safeSeconds = Math.max(0, Number(seconds) || 0);
+  return `00:${String(safeMinutes).padStart(2, '0')}:${String(safeSeconds).padStart(2, '0')}`;
+};
+
+const fromTimeInputValue = (value) => {
+  if (!value) return { minutes: 0, seconds: 0 };
+  const parts = value.split(':').map((item) => Number(item));
+  if (parts.length < 2 || parts.some((part) => Number.isNaN(part) || part < 0)) return { minutes: 0, seconds: 0 };
+  const seconds = parts.length === 3 ? parts[2] : 0;
+  return { minutes: parts[1], seconds };
+};
+
 const toRounded = (value) => Math.round(value);
 const emptyZoneForm = zoneRules.reduce((acc, rule) => {
   acc[rule.zone] = { hr: { min: '', max: '' }, power: { min: '', max: '' } };
@@ -998,6 +1012,25 @@ function App() {
 
   const selectedNames = (items, ids) => items.filter((item) => ids.includes(item.id)).map((item) => item.name).join(', ');
 
+  const formatIntervalSummary = (interval, trainingMode) => {
+    if (trainingMode === 'in_bici') {
+      return `${interval.minutes}m${interval.seconds}s ${interval.intensityZone || '-'} rpm ${interval.rpm || '-'} rpe ${interval.rpe || '-'}`;
+    }
+
+    const details = [
+      String(interval.minutes || 0),
+      interval.exerciseName || '-'
+    ];
+    const recoverySeconds = Number(interval.recoverySeconds || 0);
+    if (recoverySeconds > 0) {
+      details.push(`rec ${Math.floor(recoverySeconds / 60)}:${String(recoverySeconds % 60).padStart(2, '0')}`);
+    }
+    if (interval.overloadPct !== null && interval.overloadPct !== undefined && interval.overloadPct !== '') {
+      details.push(`sovr. ${interval.overloadPct}%`);
+    }
+    return details.join(' ');
+  };
+
   const toggleMultiValue = (field, value) => {
     setTrainingMethodForm((prev) => {
       const has = prev[field].includes(value);
@@ -1276,15 +1309,58 @@ function App() {
                       <h4>Serie del metodo</h4>
                       <div className="set-grid">
                         <label className="compact-field">Numero serie<input className="short-input" type="number" min="1" value={set.seriesCount} onChange={(e) => updateSetField(setIndex, 'seriesCount', e.target.value)} /></label>
-                        <label className="compact-field">Recupero minuti<input className="short-input" type="number" min="0" value={set.recoveryMinutes} onChange={(e) => updateSetField(setIndex, 'recoveryMinutes', e.target.value)} /></label>
-                        <label className="compact-field">Recupero secondi<input className="short-input" type="number" min="0" max="59" value={set.recoverySeconds} onChange={(e) => updateSetField(setIndex, 'recoverySeconds', e.target.value)} /></label>
+                        {trainingMethodForm.trainingMode === 'in_bici' ? (
+                          <>
+                            <label className="compact-field">Recupero minuti<input className="short-input" type="number" min="0" value={set.recoveryMinutes} onChange={(e) => updateSetField(setIndex, 'recoveryMinutes', e.target.value)} /></label>
+                            <label className="compact-field">Recupero secondi<input className="short-input" type="number" min="0" max="59" value={set.recoverySeconds} onChange={(e) => updateSetField(setIndex, 'recoverySeconds', e.target.value)} /></label>
+                          </>
+                        ) : (
+                          <label className="compact-field">Recupero
+                            <input
+                              className="short-input"
+                              type="time"
+                              step="1"
+                              value={toTimeInputValue(set.recoveryMinutes, set.recoverySeconds)}
+                              onChange={(e) => {
+                                const { minutes, seconds } = fromTimeInputValue(e.target.value);
+                                updateSetField(setIndex, 'recoveryMinutes', minutes);
+                                updateSetField(setIndex, 'recoverySeconds', seconds);
+                              }}
+                            />
+                          </label>
+                        )}
                       </div>
                       {set.intervals.map((interval, intervalIndex) => (
                         <div key={`interval-${intervalIndex}`} className="edit-form interval-grid">
                           <h5>Intervallo #{intervalIndex + 1}</h5>
-                          <label>Minuti<input type="number" min="0" value={interval.minutes} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'minutes', e.target.value)} /></label>
-                          <label>Secondi<input type="number" min="0" max="59" value={interval.seconds} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'seconds', e.target.value)} /></label>
-                          {trainingMethodForm.trainingMode === 'in_bici' ? (<><label>Zona<select value={interval.intensityZone} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'intensityZone', e.target.value)}>{zoneRules.map((rule) => <option key={rule.zone} value={rule.zone}>{rule.zone}</option>)}</select></label><label>RPM<input type="number" min="0" value={interval.rpm} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'rpm', e.target.value)} /></label><label>RPE<input type="number" min="0" step="0.5" value={interval.rpe} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'rpe', e.target.value)} /></label></>) : (<><label>Esercizio<select value={interval.exerciseId} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'exerciseId', e.target.value)}><option value="">Seleziona</option>{trainingExercises.map((exercise) => <option key={exercise.id} value={exercise.id}>{exercise.name}</option>)}</select></label><label>Recupero intervallo (min)<input type="number" min="0" value={interval.intervalRecoveryMinutes} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'intervalRecoveryMinutes', e.target.value)} /></label><label>Recupero intervallo (sec)<input type="number" min="0" max="59" value={interval.intervalRecoverySeconds} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'intervalRecoverySeconds', e.target.value)} /></label><label>Sovraccarico (% max)<input type="number" min="0" step="0.5" value={interval.overloadPct} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'overloadPct', e.target.value)} /></label><label className="interval-description">Descrizione intervallo<textarea value={interval.description || ''} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'description', e.target.value)} /></label></>)}
+                          {trainingMethodForm.trainingMode === 'in_bici' ? (
+                            <>
+                              <label>Minuti<input type="number" min="0" value={interval.minutes} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'minutes', e.target.value)} /></label>
+                              <label>Secondi<input type="number" min="0" max="59" value={interval.seconds} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'seconds', e.target.value)} /></label>
+                              <label>Zona<select value={interval.intensityZone} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'intensityZone', e.target.value)}>{zoneRules.map((rule) => <option key={rule.zone} value={rule.zone}>{rule.zone}</option>)}</select></label>
+                              <label>RPM<input type="number" min="0" value={interval.rpm} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'rpm', e.target.value)} /></label>
+                              <label>RPE<input type="number" min="0" step="0.5" value={interval.rpe} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'rpe', e.target.value)} /></label>
+                            </>
+                          ) : (
+                            <>
+                              <label>Numero<input type="number" min="1" value={interval.minutes} onChange={(e) => { updateIntervalField(setIndex, intervalIndex, 'minutes', e.target.value); updateIntervalField(setIndex, intervalIndex, 'seconds', 0); }} /></label>
+                              <label>Esercizio<select value={interval.exerciseId} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'exerciseId', e.target.value)}><option value="">Seleziona</option>{trainingExercises.map((exercise) => <option key={exercise.id} value={exercise.id}>{exercise.name}</option>)}</select></label>
+                              <label>Recupero intervallo
+                                <input
+                                  type="time"
+                                  step="1"
+                                  value={toTimeInputValue(interval.intervalRecoveryMinutes, interval.intervalRecoverySeconds)}
+                                  onChange={(e) => {
+                                    const { minutes, seconds } = fromTimeInputValue(e.target.value);
+                                    updateIntervalField(setIndex, intervalIndex, 'intervalRecoveryMinutes', minutes);
+                                    updateIntervalField(setIndex, intervalIndex, 'intervalRecoverySeconds', seconds);
+                                  }}
+                                />
+                              </label>
+                              <label>Sovraccarico (% max)<input type="number" min="0" step="0.5" value={interval.overloadPct} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'overloadPct', e.target.value)} /></label>
+                              <label className="interval-description">Descrizione intervallo<textarea value={interval.description || ''} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'description', e.target.value)} /></label>
+                            </>
+                          )}
                           {set.intervals.length > 1 && <button type="button" className="danger" onClick={() => removeInterval(setIndex, intervalIndex)}>Rimuovi intervallo</button>}
                         </div>
                       ))}
@@ -1321,7 +1397,7 @@ function App() {
                             <td>{method.stressScore ?? '-'}</td>
                             <td>
                               {method.sets.map((set) => (
-                                <div key={set.id}>{set.seriesCount} serie, rec {Math.floor(set.recoverySeconds / 60)}:{String(set.recoverySeconds % 60).padStart(2, '0')} - {set.intervals.map((i) => method.trainingMode === 'in_bici' ? `${i.minutes}m${i.seconds}s ${i.intensityZone || '-'} rpm ${i.rpm || '-'} rpe ${i.rpe || '-'}` : `${i.minutes}m${i.seconds}s ${i.exerciseName || '-'} rec ${Math.floor((i.recoverySeconds || 0) / 60)}:${String((i.recoverySeconds || 0) % 60).padStart(2, '0')} sovr. ${i.overloadPct || '-'}%`).join(' | ')}</div>
+                                <div key={set.id}>{set.seriesCount} serie, rec {Math.floor(set.recoverySeconds / 60)}:{String(set.recoverySeconds % 60).padStart(2, '0')} - {set.intervals.map((i) => formatIntervalSummary(i, method.trainingMode)).join(' | ')}</div>
                               ))}
                             </td>
                             <td>
