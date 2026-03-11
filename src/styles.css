@@ -99,3 +99,7 @@ td {
   gap: 8px;
   flex-wrap: wrap;
 }
+
+.menu-card {
+  margin-bottom: 16px;
+}
