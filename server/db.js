@@ -53,6 +53,7 @@ db.exec(`
     recorded_at TEXT NOT NULL,
     height_cm REAL,
     weight_kg REAL,
+    resting_hr INTEGER,
     aerobic_hr INTEGER,
     max_hr INTEGER,
     threshold_hr INTEGER,
@@ -75,6 +76,10 @@ const existingAthleteProfileColumns = new Set(athleteProfileColumns.map((column)
 
 if (!existingAthleteProfileColumns.has('vo2_max')) {
   db.exec('ALTER TABLE athlete_profiles ADD COLUMN vo2_max REAL;');
+}
+
+if (!existingAthleteProfileColumns.has('resting_hr')) {
+  db.exec('ALTER TABLE athlete_profiles ADD COLUMN resting_hr INTEGER;');
 }
 
 if (!existingAthleteProfileColumns.has('vo2_max_power_w')) {
