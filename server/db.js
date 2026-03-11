@@ -46,4 +46,27 @@ db.exec("UPDATE users SET email = NULL WHERE email = '';");
 // Unicità email solo quando presente.
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique_idx ON users(email) WHERE email IS NOT NULL;');
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS athlete_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    recorded_at TEXT NOT NULL,
+    height_cm REAL,
+    weight_kg REAL,
+    aerobic_hr INTEGER,
+    max_hr INTEGER,
+    threshold_hr INTEGER,
+    threshold_power_w INTEGER,
+    max_power_w INTEGER,
+    cp_2_min_w INTEGER,
+    cp_5_min_w INTEGER,
+    cp_20_min_w INTEGER,
+    zones_override_json TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+`);
+
+db.exec('CREATE INDEX IF NOT EXISTS athlete_profiles_user_idx ON athlete_profiles(user_id, recorded_at DESC, id DESC);');
+
 export default db;
