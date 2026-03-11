@@ -88,6 +88,7 @@ const emptyTrainingMethodForm = {
   macroArea: 'metabolico',
   objectiveDetailIds: [],
   categoryIds: [],
+  disciplineIds: [],
   period: 'costruzione',
   notes: '',
   methodType: 'single',
@@ -236,14 +237,22 @@ function App() {
   const [editingSnapshotId, setEditingSnapshotId] = useState(null);
   const [trainingObjectiveDetails, setTrainingObjectiveDetails] = useState([]);
   const [trainingCategories, setTrainingCategories] = useState([]);
+  const [athleteCategories, setAthleteCategories] = useState([]);
+  const [disciplines, setDisciplines] = useState([]);
   const [trainingMethods, setTrainingMethods] = useState([]);
   const [objectiveForm, setObjectiveForm] = useState({ name: '', macroArea: 'metabolico' });
   const [categoryForm, setCategoryForm] = useState({ name: '' });
+  const [athleteCategoryForm, setAthleteCategoryForm] = useState({ name: '' });
+  const [disciplineForm, setDisciplineForm] = useState({ name: '' });
   const [trainingMethodForm, setTrainingMethodForm] = useState(emptyTrainingMethodForm);
   const [editingMethodId, setEditingMethodId] = useState(null);
   const [methodManagementMode, setMethodManagementMode] = useState('list');
   const [editingObjectiveId, setEditingObjectiveId] = useState(null);
   const [editingCategoryId, setEditingCategoryId] = useState(null);
+  const [editingAthleteCategoryId, setEditingAthleteCategoryId] = useState(null);
+  const [editingDisciplineId, setEditingDisciplineId] = useState(null);
+  const [athleteCategoryIds, setAthleteCategoryIds] = useState([]);
+  const [athleteDisciplineIds, setAthleteDisciplineIds] = useState([]);
   const [autoZonesPreview, setAutoZonesPreview] = useState(computeAutoZones(null, null));
 
   const isEditing = useMemo(() => editingUserId !== null, [editingUserId]);
@@ -270,10 +279,15 @@ function App() {
 
   const loadAthleteHistory = async (id = athleteId, authToken = token) => {
     if (!id) return;
-    const data = await api(`/api/athletes/${id}/profile-history`, {
-      headers: { Authorization: `Bearer ${authToken}` }
-    });
+    const [data, taxonomy] = await Promise.all([
+      api(`/api/athletes/${id}/profile-history`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      }),
+      api(`/api/athletes/${id}/taxonomy`, { headers: { Authorization: `Bearer ${authToken}` } })
+    ]);
     setAthleteHistory(data);
+    setAthleteCategoryIds(taxonomy.categoryIds || []);
+    setAthleteDisciplineIds(taxonomy.disciplineIds || []);
 
     if (data.length > 0) {
       const latest = data[0];
@@ -303,13 +317,17 @@ function App() {
 
 
   const loadTrainingCatalog = async (authToken = token) => {
-    const [details, categories, methods] = await Promise.all([
+    const [details, categories, athleteCats, disciplineList, methods] = await Promise.all([
       api('/api/training-objective-details', { headers: { Authorization: `Bearer ${authToken}` } }),
       api('/api/training-categories', { headers: { Authorization: `Bearer ${authToken}` } }),
+      api('/api/athlete-categories', { headers: { Authorization: `Bearer ${authToken}` } }),
+      api('/api/disciplines', { headers: { Authorization: `Bearer ${authToken}` } }),
       api('/api/training-methods', { headers: { Authorization: `Bearer ${authToken}` } })
     ]);
     setTrainingObjectiveDetails(details);
     setTrainingCategories(categories);
+    setAthleteCategories(athleteCats);
+    setDisciplines(disciplineList);
     setTrainingMethods(methods);
   };
 
@@ -425,6 +443,109 @@ function App() {
     }
   };
 
+
+  const handleSaveAthleteCategory = async (e) => {
+    e.preventDefault();
+    setMessage('');
+    try {
+      const endpoint = editingAthleteCategoryId ? `/api/athlete-categories/${editingAthleteCategoryId}` : '/api/athlete-categories';
+      const method = editingAthleteCategoryId ? 'PUT' : 'POST';
+      await api(endpoint, {
+        method,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(athleteCategoryForm)
+      });
+      setEditingAthleteCategoryId(null);
+      setAthleteCategoryForm({ name: '' });
+      await loadTrainingCatalog();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const startEditingAthleteCategory = (category) => {
+    setEditingAthleteCategoryId(category.id);
+    setAthleteCategoryForm({ name: category.name });
+  };
+
+  const cancelAthleteCategoryEditing = () => {
+    setEditingAthleteCategoryId(null);
+    setAthleteCategoryForm({ name: '' });
+  };
+
+  const deleteAthleteCategory = async (id) => {
+    try {
+      await api(`/api/athlete-categories/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (editingAthleteCategoryId === id) {
+        cancelAthleteCategoryEditing();
+      }
+      await loadTrainingCatalog();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const handleSaveDiscipline = async (e) => {
+    e.preventDefault();
+    setMessage('');
+    try {
+      const endpoint = editingDisciplineId ? `/api/disciplines/${editingDisciplineId}` : '/api/disciplines';
+      const method = editingDisciplineId ? 'PUT' : 'POST';
+      await api(endpoint, {
+        method,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(disciplineForm)
+      });
+      setEditingDisciplineId(null);
+      setDisciplineForm({ name: '' });
+      await loadTrainingCatalog();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const startEditingDiscipline = (discipline) => {
+    setEditingDisciplineId(discipline.id);
+    setDisciplineForm({ name: discipline.name });
+  };
+
+  const cancelDisciplineEditing = () => {
+    setEditingDisciplineId(null);
+    setDisciplineForm({ name: '' });
+  };
+
+  const deleteDiscipline = async (id) => {
+    try {
+      await api(`/api/disciplines/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (editingDisciplineId === id) {
+        cancelDisciplineEditing();
+      }
+      await loadTrainingCatalog();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const saveAthleteTaxonomy = async () => {
+    if (!athleteId || !isCoachUser) return;
+    try {
+      await api(`/api/athletes/${athleteId}/taxonomy`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ categoryIds: athleteCategoryIds, disciplineIds: athleteDisciplineIds })
+      });
+      setMessage('Categorie e discipline atleta aggiornate');
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
   const handleCreateTrainingMethod = async (e) => {
     e.preventDefault();
     setMessage('');
@@ -464,6 +585,7 @@ function App() {
       macroArea: method.macroArea,
       objectiveDetailIds: method.objectiveDetailIds || [],
       categoryIds: method.categoryIds || [],
+      disciplineIds: method.disciplineIds || [],
       period: method.period,
       notes: method.notes || '',
       methodType: method.methodType,
@@ -520,7 +642,7 @@ function App() {
   }, [mode, token, athleteId]);
 
   useEffect(() => {
-    if (token && isCoachUser && ['training-methods', 'training-objective-details', 'training-categories'].includes(mode)) {
+    if (token && isCoachUser && ['training-methods', 'training-objective-details', 'training-categories', 'athlete-categories', 'disciplines'].includes(mode)) {
       loadTrainingCatalog().catch((err) => setMessage(err.message));
     }
   }, [mode, token, isCoachUser]);
@@ -859,6 +981,8 @@ function App() {
               {isCoachUser && <button onClick={() => setMode('training-methods')}>Metodi allenamento</button>}
               {isCoachUser && <button onClick={() => setMode('training-objective-details')}>Dettagli obiettivi</button>}
               {isCoachUser && <button onClick={() => setMode('training-categories')}>Categorie metodi</button>}
+              {isCoachUser && <button onClick={() => setMode('athlete-categories')}>Categorie atleti</button>}
+              {isCoachUser && <button onClick={() => setMode('disciplines')}>Discipline</button>}
             </div>
           </section>
 
@@ -924,6 +1048,8 @@ function App() {
                   <button type="button" onClick={() => { setMethodManagementMode('list'); cancelTrainingMethodEditing(); }}>Metodi</button>
                   <button type="button" onClick={() => setMode('training-objective-details')}>Dettagli obiettivi</button>
                   <button type="button" onClick={() => setMode('training-categories')}>Categorie metodi</button>
+                  <button type="button" onClick={() => setMode('athlete-categories')}>Categorie atleti</button>
+                  <button type="button" onClick={() => setMode('disciplines')}>Discipline</button>
                 </div>
               </div>
 
@@ -962,6 +1088,18 @@ function App() {
                     </table>
                   </div>
 
+                  <div className="table-wrap">
+                    <h4>Seleziona discipline</h4>
+                    <table>
+                      <thead><tr><th>Seleziona</th><th>ID</th><th>Disciplina</th></tr></thead>
+                      <tbody>
+                        {disciplines.map((discipline) => (
+                          <tr key={discipline.id}><td><input type="checkbox" checked={trainingMethodForm.disciplineIds.includes(discipline.id)} onChange={() => toggleMultiValue('disciplineIds', discipline.id)} /></td><td>{discipline.id}</td><td>{discipline.name}</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
                   {trainingMethodForm.sets.map((set, setIndex) => (
                     <div key={`set-${setIndex}`} className="edit-form">
                       <h4>Serie del metodo</h4>
@@ -971,7 +1109,7 @@ function App() {
                         <label className="compact-field">Recupero secondi<input className="short-input" type="number" min="0" max="59" value={set.recoverySeconds} onChange={(e) => updateSetField(setIndex, 'recoverySeconds', e.target.value)} /></label>
                       </div>
                       {set.intervals.map((interval, intervalIndex) => (
-                        <div key={`interval-${intervalIndex}`} className="edit-form">
+                        <div key={`interval-${intervalIndex}`} className="edit-form interval-grid">
                           <h5>Intervallo #{intervalIndex + 1}</h5>
                           <label>Minuti<input type="number" min="0" value={interval.minutes} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'minutes', e.target.value)} /></label>
                           <label>Secondi<input type="number" min="0" max="59" value={interval.seconds} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'seconds', e.target.value)} /></label>
@@ -1001,7 +1139,7 @@ function App() {
                   </div>
                   <div className="table-wrap">
                     <table>
-                      <thead><tr><th>Nome</th><th>Codice</th><th>Obiettivi</th><th>Categorie</th><th>Stress</th><th>Dettaglio</th><th>Azioni</th></tr></thead>
+                      <thead><tr><th>Nome</th><th>Codice</th><th>Obiettivi</th><th>Categorie</th><th>Discipline</th><th>Stress</th><th>Dettaglio</th><th>Azioni</th></tr></thead>
                       <tbody>
                         {trainingMethods.map((method) => (
                           <tr key={method.id}>
@@ -1009,6 +1147,7 @@ function App() {
                             <td>{method.code}</td>
                             <td>{(method.objectiveDetailNames || []).join(', ')}</td>
                             <td>{(method.categoryNames || []).join(', ')}</td>
+                            <td>{(method.disciplineNames || []).join(', ')}</td>
                             <td>{method.stressScore ?? '-'}</td>
                             <td>
                               {method.sets.map((set) => (
@@ -1114,6 +1253,69 @@ function App() {
             </section>
           )}
 
+          {mode === 'athlete-categories' && isCoachUser && (
+            <section className="card">
+              <div className="row">
+                <h2>Categorie atleta</h2>
+                <button type="button" className="secondary" onClick={() => setMode('training-methods')}>Torna ai metodi</button>
+              </div>
+              <form onSubmit={handleSaveAthleteCategory} className="subcard">
+                <h3>{editingAthleteCategoryId ? `Modifica categoria atleta #${editingAthleteCategoryId}` : 'Nuova categoria atleta'}</h3>
+                <label>Nome categoria atleta<input value={athleteCategoryForm.name} onChange={(e) => setAthleteCategoryForm({ name: e.target.value })} required /></label>
+                <div className="actions">
+                  <button type="submit">{editingAthleteCategoryId ? 'Salva modifica' : 'Aggiungi categoria atleta'}</button>
+                  {editingAthleteCategoryId && <button type="button" className="secondary" onClick={cancelAthleteCategoryEditing}>Annulla</button>}
+                </div>
+              </form>
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>ID</th><th>Nome</th><th>Azioni</th></tr></thead>
+                  <tbody>
+                    {athleteCategories.map((category) => (
+                      <tr key={category.id}>
+                        <td>{category.id}</td>
+                        <td>{category.name}</td>
+                        <td><div className="actions"><button type="button" onClick={() => startEditingAthleteCategory(category)}>Modifica</button><button type="button" className="danger" onClick={() => deleteAthleteCategory(category.id)}>Elimina</button></div></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+
+          {mode === 'disciplines' && isCoachUser && (
+            <section className="card">
+              <div className="row">
+                <h2>Discipline</h2>
+                <button type="button" className="secondary" onClick={() => setMode('training-methods')}>Torna ai metodi</button>
+              </div>
+              <form onSubmit={handleSaveDiscipline} className="subcard">
+                <h3>{editingDisciplineId ? `Modifica disciplina #${editingDisciplineId}` : 'Nuova disciplina'}</h3>
+                <label>Nome disciplina<input value={disciplineForm.name} onChange={(e) => setDisciplineForm({ name: e.target.value })} required /></label>
+                <div className="actions">
+                  <button type="submit">{editingDisciplineId ? 'Salva modifica' : 'Aggiungi disciplina'}</button>
+                  {editingDisciplineId && <button type="button" className="secondary" onClick={cancelDisciplineEditing}>Annulla</button>}
+                </div>
+              </form>
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>ID</th><th>Nome</th><th>Azioni</th></tr></thead>
+                  <tbody>
+                    {disciplines.map((discipline) => (
+                      <tr key={discipline.id}>
+                        <td>{discipline.id}</td>
+                        <td>{discipline.name}</td>
+                        <td><div className="actions"><button type="button" onClick={() => startEditingDiscipline(discipline)}>Modifica</button><button type="button" className="danger" onClick={() => deleteDiscipline(discipline.id)}>Elimina</button></div></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+
+
           {mode === 'athlete-profile' && (
             <section className="card">
               <div className="row">
@@ -1124,6 +1326,23 @@ function App() {
                 <>
                   <form onSubmit={handleSaveAthleteSnapshot}>
                     <h3>Nuovo inserimento dati</h3>
+                    {isCoachUser && (
+                      <div className="split-panels">
+                        <div className="subcard">
+                          <h4>Categorie atleta</h4>
+                          {athleteCategories.map((category) => (
+                            <label key={`ath-cat-${category.id}`}><input type="checkbox" checked={athleteCategoryIds.includes(category.id)} onChange={() => setAthleteCategoryIds((prev) => prev.includes(category.id) ? prev.filter((id) => id !== category.id) : [...prev, category.id])} /> {category.name}</label>
+                          ))}
+                        </div>
+                        <div className="subcard">
+                          <h4>Discipline atleta</h4>
+                          {disciplines.map((discipline) => (
+                            <label key={`ath-disc-${discipline.id}`}><input type="checkbox" checked={athleteDisciplineIds.includes(discipline.id)} onChange={() => setAthleteDisciplineIds((prev) => prev.includes(discipline.id) ? prev.filter((id) => id !== discipline.id) : [...prev, discipline.id])} /> {discipline.name}</label>
+                          ))}
+                        </div>
+                        <button type="button" onClick={saveAthleteTaxonomy}>Salva categorie/discipline atleta</button>
+                      </div>
+                    )}
                     {Object.keys(emptyAthleteForm).map((field) => (
                       <label key={field}>
                         {athleteFieldLabels[field]}

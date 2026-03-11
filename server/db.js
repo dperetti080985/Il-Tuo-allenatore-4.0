@@ -172,6 +172,22 @@ db.exec(`
 `);
 
 db.exec(`
+  CREATE TABLE IF NOT EXISTS athlete_categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS disciplines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+db.exec(`
   CREATE TABLE IF NOT EXISTS training_method_objective_details (
     training_method_id INTEGER NOT NULL,
     objective_detail_id INTEGER NOT NULL,
@@ -188,6 +204,36 @@ db.exec(`
     PRIMARY KEY (training_method_id, category_id),
     FOREIGN KEY (training_method_id) REFERENCES training_methods(id) ON DELETE CASCADE,
     FOREIGN KEY (category_id) REFERENCES training_categories(id)
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS training_method_disciplines (
+    training_method_id INTEGER NOT NULL,
+    discipline_id INTEGER NOT NULL,
+    PRIMARY KEY (training_method_id, discipline_id),
+    FOREIGN KEY (training_method_id) REFERENCES training_methods(id) ON DELETE CASCADE,
+    FOREIGN KEY (discipline_id) REFERENCES disciplines(id)
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS athlete_category_assignments (
+    athlete_id INTEGER NOT NULL,
+    category_id INTEGER NOT NULL,
+    PRIMARY KEY (athlete_id, category_id),
+    FOREIGN KEY (athlete_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (category_id) REFERENCES athlete_categories(id)
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS athlete_discipline_assignments (
+    athlete_id INTEGER NOT NULL,
+    discipline_id INTEGER NOT NULL,
+    PRIMARY KEY (athlete_id, discipline_id),
+    FOREIGN KEY (athlete_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (discipline_id) REFERENCES disciplines(id)
   );
 `);
 

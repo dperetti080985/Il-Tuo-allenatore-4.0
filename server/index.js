@@ -55,6 +55,34 @@ const validateRequiredUserFields = (user) => {
 
 const isCoach = (user) => user?.userType === 'coach';
 
+
+const uniqueIds = (items = []) => [...new Set(items.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0))];
+
+const loadAthleteAssignments = (athleteId) => {
+  const categoryRows = db.prepare(`
+    SELECT c.id, c.name
+    FROM athlete_category_assignments a
+    JOIN athlete_categories c ON c.id = a.category_id
+    WHERE a.athlete_id = ?
+    ORDER BY c.name ASC
+  `).all(athleteId);
+
+  const disciplineRows = db.prepare(`
+    SELECT d.id, d.name
+    FROM athlete_discipline_assignments a
+    JOIN disciplines d ON d.id = a.discipline_id
+    WHERE a.athlete_id = ?
+    ORDER BY d.name ASC
+  `).all(athleteId);
+
+  return {
+    categoryIds: categoryRows.map((row) => row.id),
+    categoryNames: categoryRows.map((row) => row.name),
+    disciplineIds: disciplineRows.map((row) => row.id),
+    disciplineNames: disciplineRows.map((row) => row.name)
+  };
+};
+
 const ZONE_RULES = [
   { zone: 'Z1', min: 0, max: 55 },
   { zone: 'Z2', min: 56, max: 75 },
@@ -264,6 +292,16 @@ const mapTrainingMethod = (methodRow) => {
     `)
     .all(methodRow.id);
 
+  const disciplineRows = db
+    .prepare(`
+      SELECT d.id, d.name
+      FROM training_method_disciplines m
+      JOIN disciplines d ON d.id = m.discipline_id
+      WHERE m.training_method_id = ?
+      ORDER BY d.name ASC
+    `)
+    .all(methodRow.id);
+
   const sets = db
     .prepare('SELECT id, set_order AS setOrder, series_count AS seriesCount, recovery_seconds AS recoverySeconds FROM training_method_sets WHERE training_method_id = ? ORDER BY set_order ASC')
     .all(methodRow.id)
@@ -300,6 +338,8 @@ const mapTrainingMethod = (methodRow) => {
     category: methodRow.category,
     categoryIds: categoryRows.map((row) => row.id),
     categoryNames: categoryRows.map((row) => row.name),
+    disciplineIds: disciplineRows.map((row) => row.id),
+    disciplineNames: disciplineRows.map((row) => row.name),
     period: methodRow.period,
     notes: methodRow.notes,
     methodType: methodRow.method_type,
@@ -323,6 +363,9 @@ const validateTrainingMethodPayload = (payload) => {
   }
   if (!Array.isArray(payload.categoryIds) || payload.categoryIds.length === 0) {
     return 'Selezionare almeno una categoria';
+  }
+  if (!Array.isArray(payload.disciplineIds) || payload.disciplineIds.length === 0) {
+    return 'Selezionare almeno una disciplina';
   }
 
   if (!TRAINING_MACRO_AREAS.has(payload.macroArea)) return 'Macro area non valida';
@@ -1001,6 +1044,138 @@ app.delete('/api/training-categories/:id', auth, (req, res) => {
   return res.json({ ok: true });
 });
 
+
+app.get('/api/athlete-categories', auth, (req, res) => {
+  if (!isCoach(req.user)) {
+    return res.status(403).json({ message: 'Solo i coach possono accedere alle categorie atleta' });
+  }
+
+  const rows = db.prepare('SELECT id, name, created_at AS createdAt FROM athlete_categories ORDER BY name ASC').all();
+  return res.json(rows);
+});
+
+app.post('/api/athlete-categories', auth, (req, res) => {
+  if (!isCoach(req.user)) {
+    return res.status(403).json({ message: 'Solo i coach possono creare categorie atleta' });
+  }
+
+  const name = req.body?.name?.trim();
+  if (!name) return res.status(400).json({ message: 'name è obbligatorio' });
+
+  try {
+    const info = db.prepare('INSERT INTO athlete_categories (name) VALUES (?)').run(name);
+    const created = db.prepare('SELECT id, name, created_at AS createdAt FROM athlete_categories WHERE id = ?').get(info.lastInsertRowid);
+    return res.status(201).json(created);
+  } catch {
+    return res.status(409).json({ message: 'Categoria atleta già esistente' });
+  }
+});
+
+app.put('/api/athlete-categories/:id', auth, (req, res) => {
+  if (!isCoach(req.user)) return res.status(403).json({ message: 'Solo i coach possono modificare categorie atleta' });
+  const id = Number(req.params.id);
+  const exists = db.prepare('SELECT id FROM athlete_categories WHERE id = ?').get(id);
+  if (!exists) return res.status(404).json({ message: 'Categoria atleta non trovata' });
+  const name = req.body?.name?.trim();
+  if (!name) return res.status(400).json({ message: 'name è obbligatorio' });
+  try {
+    db.prepare('UPDATE athlete_categories SET name = ? WHERE id = ?').run(name, id);
+    return res.json(db.prepare('SELECT id, name, created_at AS createdAt FROM athlete_categories WHERE id = ?').get(id));
+  } catch {
+    return res.status(409).json({ message: 'Categoria atleta già esistente' });
+  }
+});
+
+app.delete('/api/athlete-categories/:id', auth, (req, res) => {
+  if (!isCoach(req.user)) return res.status(403).json({ message: 'Solo i coach possono eliminare categorie atleta' });
+  const id = Number(req.params.id);
+  const linked = db.prepare('SELECT athlete_id FROM athlete_category_assignments WHERE category_id = ? LIMIT 1').get(id);
+  if (linked) return res.status(409).json({ message: 'Categoria atleta associata ad atleti esistenti' });
+  const info = db.prepare('DELETE FROM athlete_categories WHERE id = ?').run(id);
+  if (info.changes === 0) return res.status(404).json({ message: 'Categoria atleta non trovata' });
+  return res.json({ ok: true });
+});
+
+app.get('/api/disciplines', auth, (req, res) => {
+  if (!isCoach(req.user)) {
+    return res.status(403).json({ message: 'Solo i coach possono accedere alle discipline' });
+  }
+
+  const rows = db.prepare('SELECT id, name, created_at AS createdAt FROM disciplines ORDER BY name ASC').all();
+  return res.json(rows);
+});
+
+app.post('/api/disciplines', auth, (req, res) => {
+  if (!isCoach(req.user)) {
+    return res.status(403).json({ message: 'Solo i coach possono creare discipline' });
+  }
+
+  const name = req.body?.name?.trim();
+  if (!name) return res.status(400).json({ message: 'name è obbligatorio' });
+
+  try {
+    const info = db.prepare('INSERT INTO disciplines (name) VALUES (?)').run(name);
+    const created = db.prepare('SELECT id, name, created_at AS createdAt FROM disciplines WHERE id = ?').get(info.lastInsertRowid);
+    return res.status(201).json(created);
+  } catch {
+    return res.status(409).json({ message: 'Disciplina già esistente' });
+  }
+});
+
+app.put('/api/disciplines/:id', auth, (req, res) => {
+  if (!isCoach(req.user)) return res.status(403).json({ message: 'Solo i coach possono modificare discipline' });
+  const id = Number(req.params.id);
+  const exists = db.prepare('SELECT id FROM disciplines WHERE id = ?').get(id);
+  if (!exists) return res.status(404).json({ message: 'Disciplina non trovata' });
+  const name = req.body?.name?.trim();
+  if (!name) return res.status(400).json({ message: 'name è obbligatorio' });
+  try {
+    db.prepare('UPDATE disciplines SET name = ? WHERE id = ?').run(name, id);
+    return res.json(db.prepare('SELECT id, name, created_at AS createdAt FROM disciplines WHERE id = ?').get(id));
+  } catch {
+    return res.status(409).json({ message: 'Disciplina già esistente' });
+  }
+});
+
+app.delete('/api/disciplines/:id', auth, (req, res) => {
+  if (!isCoach(req.user)) return res.status(403).json({ message: 'Solo i coach possono eliminare discipline' });
+  const id = Number(req.params.id);
+  const linkedAthlete = db.prepare('SELECT athlete_id FROM athlete_discipline_assignments WHERE discipline_id = ? LIMIT 1').get(id);
+  const linkedMethod = db.prepare('SELECT training_method_id FROM training_method_disciplines WHERE discipline_id = ? LIMIT 1').get(id);
+  if (linkedAthlete || linkedMethod) return res.status(409).json({ message: 'Disciplina associata a record esistenti' });
+  const info = db.prepare('DELETE FROM disciplines WHERE id = ?').run(id);
+  if (info.changes === 0) return res.status(404).json({ message: 'Disciplina non trovata' });
+  return res.json({ ok: true });
+});
+
+app.get('/api/athletes/:id/taxonomy', auth, (req, res) => {
+  const athleteId = Number(req.params.id);
+  if (!canAccessAthlete(req.user, athleteId)) return res.status(403).json({ message: 'Non autorizzato' });
+  const athlete = db.prepare("SELECT id, user_type AS userType FROM users WHERE id = ?").get(athleteId);
+  if (!athlete) return res.status(404).json({ message: 'Utente non trovato' });
+  if (athlete.userType !== 'athlete') return res.status(400).json({ message: 'Utente non atleta' });
+  return res.json(loadAthleteAssignments(athleteId));
+});
+
+app.put('/api/athletes/:id/taxonomy', auth, (req, res) => {
+  const athleteId = Number(req.params.id);
+  if (!isCoach(req.user)) return res.status(403).json({ message: 'Solo i coach possono aggiornare categorie e discipline atleta' });
+  const athlete = db.prepare("SELECT id, user_type AS userType FROM users WHERE id = ?").get(athleteId);
+  if (!athlete) return res.status(404).json({ message: 'Utente non trovato' });
+  if (athlete.userType !== 'athlete') return res.status(400).json({ message: 'Utente non atleta' });
+
+  const categoryIds = uniqueIds(req.body?.categoryIds || []);
+  const disciplineIds = uniqueIds(req.body?.disciplineIds || []);
+
+  db.prepare('DELETE FROM athlete_category_assignments WHERE athlete_id = ?').run(athleteId);
+  db.prepare('DELETE FROM athlete_discipline_assignments WHERE athlete_id = ?').run(athleteId);
+
+  categoryIds.forEach((id) => db.prepare('INSERT INTO athlete_category_assignments (athlete_id, category_id) VALUES (?, ?)').run(athleteId, id));
+  disciplineIds.forEach((id) => db.prepare('INSERT INTO athlete_discipline_assignments (athlete_id, discipline_id) VALUES (?, ?)').run(athleteId, id));
+
+  return res.json(loadAthleteAssignments(athleteId));
+});
+
 app.get('/api/training-methods', auth, (req, res) => {
   if (!isCoach(req.user)) {
     return res.status(403).json({ message: 'Solo i coach possono accedere ai metodi' });
@@ -1019,15 +1194,19 @@ app.post('/api/training-methods', auth, (req, res) => {
   const validationError = validateTrainingMethodPayload(payload);
   if (validationError) return res.status(400).json({ message: validationError });
 
-  const objectiveIds = [...new Set(payload.objectiveDetailIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
-  const categoryIds = [...new Set(payload.categoryIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
+  const objectiveIds = uniqueIds(payload.objectiveDetailIds);
+  const categoryIds = uniqueIds(payload.categoryIds);
+  const disciplineIds = uniqueIds(payload.disciplineIds);
   if (objectiveIds.length === 0) return res.status(400).json({ message: 'Dettagli obiettivo non validi' });
   if (categoryIds.length === 0) return res.status(400).json({ message: 'Categorie non valide' });
+  if (disciplineIds.length === 0) return res.status(400).json({ message: 'Discipline non valide' });
 
   const foundObjectiveCount = db.prepare(`SELECT COUNT(*) AS count FROM training_objective_details WHERE id IN (${objectiveIds.map(() => '?').join(',')})`).get(...objectiveIds).count;
   if (foundObjectiveCount !== objectiveIds.length) return res.status(400).json({ message: 'Dettaglio obiettivo non trovato' });
   const foundCategoryCount = db.prepare(`SELECT COUNT(*) AS count FROM training_categories WHERE id IN (${categoryIds.map(() => '?').join(',')})`).get(...categoryIds).count;
   if (foundCategoryCount !== categoryIds.length) return res.status(400).json({ message: 'Categoria non trovata' });
+  const foundDisciplineCount = db.prepare(`SELECT COUNT(*) AS count FROM disciplines WHERE id IN (${disciplineIds.map(() => '?').join(',')})`).get(...disciplineIds).count;
+  if (foundDisciplineCount !== disciplineIds.length) return res.status(400).json({ message: 'Disciplina non trovata' });
 
   try {
     const info = db.prepare(`
@@ -1053,6 +1232,10 @@ app.post('/api/training-methods', auth, (req, res) => {
 
     categoryIds.forEach((categoryId) => {
       db.prepare('INSERT INTO training_method_categories (training_method_id, category_id) VALUES (?, ?)').run(info.lastInsertRowid, categoryId);
+    });
+
+    disciplineIds.forEach((disciplineId) => {
+      db.prepare('INSERT INTO training_method_disciplines (training_method_id, discipline_id) VALUES (?, ?)').run(info.lastInsertRowid, disciplineId);
     });
 
     for (let setIndex = 0; setIndex < payload.sets.length; setIndex += 1) {
@@ -1101,10 +1284,12 @@ app.put('/api/training-methods/:id', auth, (req, res) => {
   const validationError = validateTrainingMethodPayload(payload);
   if (validationError) return res.status(400).json({ message: validationError });
 
-  const objectiveIds = [...new Set(payload.objectiveDetailIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
-  const categoryIds = [...new Set(payload.categoryIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
+  const objectiveIds = uniqueIds(payload.objectiveDetailIds);
+  const categoryIds = uniqueIds(payload.categoryIds);
+  const disciplineIds = uniqueIds(payload.disciplineIds);
   if (objectiveIds.length === 0) return res.status(400).json({ message: 'Dettagli obiettivo non validi' });
   if (categoryIds.length === 0) return res.status(400).json({ message: 'Categorie non valide' });
+  if (disciplineIds.length === 0) return res.status(400).json({ message: 'Discipline non valide' });
 
   try {
     db.prepare(`
@@ -1128,6 +1313,7 @@ app.put('/api/training-methods/:id', auth, (req, res) => {
 
     db.prepare('DELETE FROM training_method_objective_details WHERE training_method_id = ?').run(methodId);
     db.prepare('DELETE FROM training_method_categories WHERE training_method_id = ?').run(methodId);
+    db.prepare('DELETE FROM training_method_disciplines WHERE training_method_id = ?').run(methodId);
     db.prepare('DELETE FROM training_method_intervals WHERE set_id IN (SELECT id FROM training_method_sets WHERE training_method_id = ?)').run(methodId);
     db.prepare('DELETE FROM training_method_sets WHERE training_method_id = ?').run(methodId);
 
@@ -1137,6 +1323,10 @@ app.put('/api/training-methods/:id', auth, (req, res) => {
 
     categoryIds.forEach((categoryId) => {
       db.prepare('INSERT INTO training_method_categories (training_method_id, category_id) VALUES (?, ?)').run(methodId, categoryId);
+    });
+
+    disciplineIds.forEach((disciplineId) => {
+      db.prepare('INSERT INTO training_method_disciplines (training_method_id, discipline_id) VALUES (?, ?)').run(methodId, disciplineId);
     });
 
     for (let setIndex = 0; setIndex < payload.sets.length; setIndex += 1) {
@@ -1203,6 +1393,10 @@ app.post('/api/training-methods/:id/duplicate', auth, (req, res) => {
 
   sourceMapped.categoryIds.forEach((categoryId) => {
     db.prepare('INSERT INTO training_method_categories (training_method_id, category_id) VALUES (?, ?)').run(copyInfo.lastInsertRowid, categoryId);
+  });
+
+  sourceMapped.disciplineIds.forEach((disciplineId) => {
+    db.prepare('INSERT INTO training_method_disciplines (training_method_id, discipline_id) VALUES (?, ?)').run(copyInfo.lastInsertRowid, disciplineId);
   });
 
   sourceMapped.sets.forEach((set, setIndex) => {

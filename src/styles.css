@@ -146,3 +146,11 @@ td {
 .short-input {
   max-width: 120px;
 }
+
+
+.interval-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+  align-items: end;
+}
