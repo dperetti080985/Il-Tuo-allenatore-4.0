@@ -101,23 +101,6 @@ const cloneSet = (set = emptyMethodSet) => ({
   intervals: (set.intervals || emptyMethodSet.intervals).map((interval) => ({ ...interval }))
 });
 
-const getProgressionMultipliers = (methodType, incrementPct) => {
-  const increment = Number(incrementPct || 0) / 100;
-  if (methodType === 'single') return [1];
-  if (methodType === 'monthly_weekly') return [1, 1 + increment, 1 + increment * 2, Math.max(0.5, 1 - increment)];
-  if (methodType === 'monthly_biweekly') return [1, 1 + increment];
-  return [1];
-};
-
-const buildAutoSets = (baseSet, methodType, incrementPct) => {
-  const normalizedSet = cloneSet(baseSet);
-  const baseSeries = Math.max(1, Number(normalizedSet.seriesCount || 1));
-  return getProgressionMultipliers(methodType, incrementPct).map((multiplier) => ({
-    ...cloneSet(normalizedSet),
-    seriesCount: Math.max(1, Math.round(baseSeries * multiplier))
-  }));
-};
-
 const zoneRules = [
   { zone: 'Z1', min: 0, max: 55 },
   { zone: 'Z2', min: 56, max: 75 },
@@ -225,7 +208,9 @@ function App() {
   const [categoryForm, setCategoryForm] = useState({ name: '' });
   const [trainingMethodForm, setTrainingMethodForm] = useState(emptyTrainingMethodForm);
   const [editingMethodId, setEditingMethodId] = useState(null);
-  const [trainingConfigView, setTrainingConfigView] = useState('method');
+  const [methodManagementMode, setMethodManagementMode] = useState('list');
+  const [editingObjectiveId, setEditingObjectiveId] = useState(null);
+  const [editingCategoryId, setEditingCategoryId] = useState(null);
   const [autoZonesPreview, setAutoZonesPreview] = useState(computeAutoZones(null, null));
 
   const isEditing = useMemo(() => editingUserId !== null, [editingUserId]);
@@ -294,15 +279,18 @@ function App() {
     setTrainingMethods(methods);
   };
 
-  const handleCreateObjectiveDetail = async (e) => {
+  const handleSaveObjectiveDetail = async (e) => {
     e.preventDefault();
     setMessage('');
     try {
-      await api('/api/training-objective-details', {
-        method: 'POST',
+      const endpoint = editingObjectiveId ? `/api/training-objective-details/${editingObjectiveId}` : '/api/training-objective-details';
+      const method = editingObjectiveId ? 'PUT' : 'POST';
+      await api(endpoint, {
+        method,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(objectiveForm)
       });
+      setEditingObjectiveId(null);
       setObjectiveForm({ name: '', macroArea: objectiveForm.macroArea });
       await loadTrainingCatalog();
     } catch (err) {
@@ -310,17 +298,93 @@ function App() {
     }
   };
 
+  const startEditingObjectiveDetail = (detail) => {
+    setEditingObjectiveId(detail.id);
+    setObjectiveForm({ name: detail.name, macroArea: detail.macroArea });
+  };
 
-  const handleCreateCategory = async (e) => {
+  const cancelObjectiveEditing = () => {
+    setEditingObjectiveId(null);
+    setObjectiveForm({ name: '', macroArea: objectiveForm.macroArea });
+  };
+
+  const duplicateObjectiveDetail = async (id) => {
+    try {
+      await api(`/api/training-objective-details/${id}/duplicate`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      await loadTrainingCatalog();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const deleteObjectiveDetail = async (id) => {
+    try {
+      await api(`/api/training-objective-details/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (editingObjectiveId === id) {
+        cancelObjectiveEditing();
+      }
+      await loadTrainingCatalog();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const handleSaveCategory = async (e) => {
     e.preventDefault();
     setMessage('');
     try {
-      await api('/api/training-categories', {
-        method: 'POST',
+      const endpoint = editingCategoryId ? `/api/training-categories/${editingCategoryId}` : '/api/training-categories';
+      const method = editingCategoryId ? 'PUT' : 'POST';
+      await api(endpoint, {
+        method,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(categoryForm)
       });
+      setEditingCategoryId(null);
       setCategoryForm({ name: '' });
+      await loadTrainingCatalog();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const startEditingCategory = (category) => {
+    setEditingCategoryId(category.id);
+    setCategoryForm({ name: category.name });
+  };
+
+  const cancelCategoryEditing = () => {
+    setEditingCategoryId(null);
+    setCategoryForm({ name: '' });
+  };
+
+  const duplicateCategory = async (id) => {
+    try {
+      await api(`/api/training-categories/${id}/duplicate`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      await loadTrainingCatalog();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const deleteCategory = async (id) => {
+    try {
+      await api(`/api/training-categories/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (editingCategoryId === id) {
+        cancelCategoryEditing();
+      }
       await loadTrainingCatalog();
     } catch (err) {
       setMessage(err.message);
@@ -333,7 +397,7 @@ function App() {
     try {
       const payload = {
         ...trainingMethodForm,
-        sets: buildAutoSets(trainingMethodForm.sets[0], trainingMethodForm.methodType, trainingMethodForm.progressionIncrementPct)
+        sets: trainingMethodForm.sets.map((set) => cloneSet(set))
       };
       if (editingMethodId) {
         await api(`/api/training-methods/${editingMethodId}`, {
@@ -350,6 +414,7 @@ function App() {
       }
       setEditingMethodId(null);
       setTrainingMethodForm({ ...emptyTrainingMethodForm, objectiveDetailIds: trainingMethodForm.objectiveDetailIds });
+      setMethodManagementMode('list');
       await loadTrainingCatalog();
     } catch (err) {
       setMessage(err.message);
@@ -372,12 +437,13 @@ function App() {
       progression: method.progression || emptyTrainingMethodForm.progression,
       sets: [cloneSet(firstSet)]
     });
-    setTrainingConfigView('method');
+    setMethodManagementMode('form');
   };
 
   const cancelTrainingMethodEditing = () => {
     setEditingMethodId(null);
     setTrainingMethodForm(emptyTrainingMethodForm);
+    setMethodManagementMode('list');
   };
 
   const deleteTrainingMethod = async (id) => {
@@ -420,7 +486,7 @@ function App() {
   }, [mode, token, athleteId]);
 
   useEffect(() => {
-    if (token && isCoachUser && mode === 'training-methods') {
+    if (token && isCoachUser && ['training-methods', 'training-objective-details', 'training-categories'].includes(mode)) {
       loadTrainingCatalog().catch((err) => setMessage(err.message));
     }
   }, [mode, token, isCoachUser]);
@@ -645,12 +711,7 @@ function App() {
     sets: [{ ...prev.sets[0], intervals: prev.sets[0].intervals.filter((_, iIndex) => iIndex !== intervalIndex) }]
   }));
 
-  const autoCalculatedSets = useMemo(
-    () => buildAutoSets(trainingMethodForm.sets[0], trainingMethodForm.methodType, trainingMethodForm.progressionIncrementPct),
-    [trainingMethodForm]
-  );
-
-  const previewStressScore = useMemo(() => autoCalculatedSets.reduce((total, set) => {
+  const previewStressScore = useMemo(() => trainingMethodForm.sets.reduce((total, set) => {
     const series = Number(set.seriesCount || 0);
     const setStress = set.intervals.reduce((acc, interval) => {
       const duration = Number(interval.minutes || 0) * 60 + Number(interval.seconds || 0);
@@ -658,7 +719,7 @@ function App() {
       return acc + duration * weight;
     }, 0);
     return total + setStress * series;
-  }, 0), [autoCalculatedSets]);
+  }, 0), [trainingMethodForm.sets]);
 
   const deleteUser = async (id) => {
     try {
@@ -756,6 +817,8 @@ function App() {
               <button onClick={() => setMode(isCoachUser ? 'users-list' : 'profile')}>{isCoachUser ? 'Gestione utenti' : 'Gestione mio utente'}</button>
               {!isCoachUser && <button onClick={() => setMode('athlete-profile')}>Profilo atleta</button>}
               {isCoachUser && <button onClick={() => setMode('training-methods')}>Metodi allenamento</button>}
+              {isCoachUser && <button onClick={() => setMode('training-objective-details')}>Dettagli obiettivi</button>}
+              {isCoachUser && <button onClick={() => setMode('training-categories')}>Categorie metodi</button>}
             </div>
           </section>
 
@@ -816,59 +879,15 @@ function App() {
           {mode === 'training-methods' && isCoachUser && (
             <section className="card">
               <div className="row">
-                <h2>Metodi di allenamento</h2>
+                <h2>Gestione metodi e anagrafiche</h2>
                 <div className="actions">
-                  <button type="button" className={trainingConfigView === 'method' ? '' : 'secondary'} onClick={() => setTrainingConfigView('method')}>Metodo</button>
-                  <button type="button" className={trainingConfigView === 'registry' ? '' : 'secondary'} onClick={() => setTrainingConfigView('registry')}>Anagrafiche</button>
+                  <button type="button" onClick={() => { setMethodManagementMode('list'); cancelTrainingMethodEditing(); }}>Metodi</button>
+                  <button type="button" onClick={() => setMode('training-objective-details')}>Dettagli obiettivi</button>
+                  <button type="button" onClick={() => setMode('training-categories')}>Categorie metodi</button>
                 </div>
               </div>
 
-              {trainingConfigView === 'registry' && (
-                <div className="split-panels">
-                  <form onSubmit={handleCreateObjectiveDetail} className="subcard">
-                    <h3>Dettaglio obiettivo</h3>
-                    <label>Nome dettaglio obiettivo<input value={objectiveForm.name} onChange={(e) => setObjectiveForm({ ...objectiveForm, name: e.target.value })} required /></label>
-                    <label>Macro area
-                      <select value={objectiveForm.macroArea} onChange={(e) => setObjectiveForm({ ...objectiveForm, macroArea: e.target.value })}>
-                        {macroAreas.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-                      </select>
-                    </label>
-                    <button type="submit">Aggiungi dettaglio obiettivo</button>
-                  </form>
-
-                  <form onSubmit={handleCreateCategory} className="subcard">
-                    <h3>Categorie metodo</h3>
-                    <label>Nome categoria<input value={categoryForm.name} onChange={(e) => setCategoryForm({ name: e.target.value })} required /></label>
-                    <button type="submit">Aggiungi categoria</button>
-                  </form>
-
-                  <div className="table-wrap subcard">
-                    <h3>Dettagli obiettivo</h3>
-                    <table>
-                      <thead><tr><th>ID</th><th>Dettaglio</th><th>Macro area</th></tr></thead>
-                      <tbody>
-                        {trainingObjectiveDetails.map((detail) => (
-                          <tr key={detail.id}><td>{detail.id}</td><td>{detail.name}</td><td>{detail.macroArea}</td></tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  <div className="table-wrap subcard">
-                    <h3>Categorie</h3>
-                    <table>
-                      <thead><tr><th>ID</th><th>Nome</th></tr></thead>
-                      <tbody>
-                        {trainingCategories.map((category) => (
-                          <tr key={category.id}><td>{category.id}</td><td>{category.name}</td></tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-
-              {trainingConfigView === 'method' && (
+              {methodManagementMode === 'form' ? (
                 <form onSubmit={handleCreateTrainingMethod}>
                   <h3>{editingMethodId ? `Modifica metodo #${editingMethodId}` : 'Nuovo metodo'}</h3>
                   <label>Nome metodo<input value={trainingMethodForm.name} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, name: e.target.value })} required /></label>
@@ -905,7 +924,7 @@ function App() {
 
                   {trainingMethodForm.sets.map((set, setIndex) => (
                     <div key={`set-${setIndex}`} className="edit-form">
-                      <h4>Serie base (le successive sono calcolate automaticamente)</h4>
+                      <h4>Serie del metodo</h4>
                       <div className="set-grid">
                         <label className="compact-field">Numero serie<input className="short-input" type="number" min="1" value={set.seriesCount} onChange={(e) => updateSetField(setIndex, 'seriesCount', e.target.value)} /></label>
                         <label className="compact-field">Recupero minuti<input className="short-input" type="number" min="0" value={set.recoveryMinutes} onChange={(e) => updateSetField(setIndex, 'recoveryMinutes', e.target.value)} /></label>
@@ -928,48 +947,123 @@ function App() {
                     </div>
                   ))}
 
+                  <p>Punteggio stress stimato: <strong>{Math.round(previewStressScore)}</strong></p>
+                  <div className="actions">
+                    <button type="submit">{editingMethodId ? 'Aggiorna metodo' : 'Salva metodo'}</button>
+                    <button type="button" className="secondary" onClick={cancelTrainingMethodEditing}>Annulla</button>
+                  </div>
+                </form>
+              ) : (
+                <>
+                  <div className="row">
+                    <h3>Metodi salvati</h3>
+                    <button type="button" onClick={() => { setEditingMethodId(null); setTrainingMethodForm(emptyTrainingMethodForm); setMethodManagementMode('form'); }}>Nuovo metodo</button>
+                  </div>
                   <div className="table-wrap">
-                    <h4>Serie generate automaticamente</h4>
                     <table>
-                      <thead><tr><th>Settimana</th><th>Serie</th><th>Recupero</th></tr></thead>
+                      <thead><tr><th>Nome</th><th>Codice</th><th>Obiettivi</th><th>Categorie</th><th>Stress</th><th>Dettaglio</th><th>Azioni</th></tr></thead>
                       <tbody>
-                        {autoCalculatedSets.map((set, index) => (
-                          <tr key={`auto-${index}`}><td>{index + 1}</td><td>{set.seriesCount}</td><td>{set.recoveryMinutes}m {set.recoverySeconds}s</td></tr>
+                        {trainingMethods.map((method) => (
+                          <tr key={method.id}>
+                            <td>{method.name}</td>
+                            <td>{method.code}</td>
+                            <td>{(method.objectiveDetailNames || []).join(', ')}</td>
+                            <td>{(method.categoryNames || []).join(', ')}</td>
+                            <td>{method.stressScore ?? '-'}</td>
+                            <td>
+                              {method.sets.map((set) => (
+                                <div key={set.id}>{set.seriesCount} serie, rec {Math.floor(set.recoverySeconds / 60)}:{String(set.recoverySeconds % 60).padStart(2, '0')} - {set.intervals.map((i) => `${i.minutes}m${i.seconds}s ${i.intensityZone || '-'} rpm ${i.rpm || '-'} rpe ${i.rpe || '-'}`).join(' | ')}</div>
+                              ))}
+                            </td>
+                            <td>
+                              <div className="actions">
+                                <button type="button" onClick={() => startEditingMethod(method)}>Modifica</button>
+                                <button type="button" className="danger" onClick={() => deleteTrainingMethod(method.id)}>Elimina</button>
+                                <button type="button" onClick={() => duplicateTrainingMethod(method.id)}>Duplica</button>
+                              </div>
+                            </td>
+                          </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
-
-                  <p>Punteggio stress stimato: <strong>{Math.round(previewStressScore)}</strong></p>
-                  <div className="actions">
-                    <button type="submit">{editingMethodId ? 'Aggiorna metodo' : 'Salva metodo'}</button>
-                    {editingMethodId && <button type="button" className="secondary" onClick={cancelTrainingMethodEditing}>Annulla modifica</button>}
-                  </div>
-                </form>
+                </>
               )}
+            </section>
+          )}
 
-              <h3>Metodi salvati</h3>
+          {mode === 'training-objective-details' && isCoachUser && (
+            <section className="card">
+              <div className="row">
+                <h2>Dettagli obiettivi</h2>
+                <button type="button" className="secondary" onClick={() => setMode('training-methods')}>Torna ai metodi</button>
+              </div>
+              <form onSubmit={handleSaveObjectiveDetail} className="subcard">
+                <h3>{editingObjectiveId ? `Modifica dettaglio #${editingObjectiveId}` : 'Nuovo dettaglio obiettivo'}</h3>
+                <label>Nome dettaglio obiettivo<input value={objectiveForm.name} onChange={(e) => setObjectiveForm({ ...objectiveForm, name: e.target.value })} required /></label>
+                <label>Macro area
+                  <select value={objectiveForm.macroArea} onChange={(e) => setObjectiveForm({ ...objectiveForm, macroArea: e.target.value })}>
+                    {macroAreas.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                  </select>
+                </label>
+                <div className="actions">
+                  <button type="submit">{editingObjectiveId ? 'Salva modifica' : 'Aggiungi dettaglio obiettivo'}</button>
+                  {editingObjectiveId && <button type="button" className="secondary" onClick={cancelObjectiveEditing}>Annulla</button>}
+                </div>
+              </form>
+
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Nome</th><th>Codice</th><th>Obiettivi</th><th>Categorie</th><th>Stress</th><th>Dettaglio</th><th>Azioni</th></tr></thead>
+                  <thead><tr><th>ID</th><th>Dettaglio</th><th>Macro area</th><th>Azioni</th></tr></thead>
                   <tbody>
-                    {trainingMethods.map((method) => (
-                      <tr key={method.id}>
-                        <td>{method.name}</td>
-                        <td>{method.code}</td>
-                        <td>{(method.objectiveDetailNames || []).join(', ')}</td>
-                        <td>{(method.categoryNames || []).join(', ')}</td>
-                        <td>{method.stressScore ?? '-'}</td>
-                        <td>
-                          {method.sets.map((set) => (
-                            <div key={set.id}>{set.seriesCount} serie, rec {Math.floor(set.recoverySeconds / 60)}:{String(set.recoverySeconds % 60).padStart(2, '0')} - {set.intervals.map((i) => `${i.minutes}m${i.seconds}s ${i.intensityZone || '-'} rpm ${i.rpm || '-'} rpe ${i.rpe || '-'}`).join(' | ')}</div>
-                          ))}
-                        </td>
+                    {trainingObjectiveDetails.map((detail) => (
+                      <tr key={detail.id}>
+                        <td>{detail.id}</td>
+                        <td>{detail.name}</td>
+                        <td>{detail.macroArea}</td>
                         <td>
                           <div className="actions">
-                            <button type="button" onClick={() => startEditingMethod(method)}>Modifica</button>
-                            <button type="button" className="danger" onClick={() => deleteTrainingMethod(method.id)}>Elimina</button>
-                            <button type="button" onClick={() => duplicateTrainingMethod(method.id)}>Duplica</button>
+                            <button type="button" onClick={() => startEditingObjectiveDetail(detail)}>Modifica</button>
+                            <button type="button" className="danger" onClick={() => deleteObjectiveDetail(detail.id)}>Elimina</button>
+                            <button type="button" onClick={() => duplicateObjectiveDetail(detail.id)}>Duplica</button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+
+          {mode === 'training-categories' && isCoachUser && (
+            <section className="card">
+              <div className="row">
+                <h2>Categorie metodi</h2>
+                <button type="button" className="secondary" onClick={() => setMode('training-methods')}>Torna ai metodi</button>
+              </div>
+              <form onSubmit={handleSaveCategory} className="subcard">
+                <h3>{editingCategoryId ? `Modifica categoria #${editingCategoryId}` : 'Nuova categoria metodo'}</h3>
+                <label>Nome categoria<input value={categoryForm.name} onChange={(e) => setCategoryForm({ name: e.target.value })} required /></label>
+                <div className="actions">
+                  <button type="submit">{editingCategoryId ? 'Salva modifica' : 'Aggiungi categoria'}</button>
+                  {editingCategoryId && <button type="button" className="secondary" onClick={cancelCategoryEditing}>Annulla</button>}
+                </div>
+              </form>
+
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>ID</th><th>Nome</th><th>Azioni</th></tr></thead>
+                  <tbody>
+                    {trainingCategories.map((category) => (
+                      <tr key={category.id}>
+                        <td>{category.id}</td>
+                        <td>{category.name}</td>
+                        <td>
+                          <div className="actions">
+                            <button type="button" onClick={() => startEditingCategory(category)}>Modifica</button>
+                            <button type="button" className="danger" onClick={() => deleteCategory(category.id)}>Elimina</button>
+                            <button type="button" onClick={() => duplicateCategory(category.id)}>Duplica</button>
                           </div>
                         </td>
                       </tr>
