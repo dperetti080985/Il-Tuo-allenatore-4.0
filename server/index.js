@@ -11,6 +11,7 @@ const USER_TYPES = new Set(['coach', 'athlete']);
 const TRAINING_MACRO_AREAS = new Set(['metabolico', 'neuromuscolare']);
 const TRAINING_PERIODS = new Set(['costruzione', 'specialistico', 'pre-gara', 'gara']);
 const TRAINING_METHOD_TYPES = new Set(['single', 'monthly_weekly', 'monthly_biweekly']);
+const ZONE_STRESS_WEIGHTS = { Z1: 1, Z2: 2, Z3: 3, Z4: 5, Z5: 7, Z6: 9, Z7: 11 };
 
 app.use(cors());
 app.use(express.json());
@@ -215,9 +216,25 @@ const secondsFromParts = (minutes, seconds) => {
 };
 
 const mapTrainingMethod = (methodRow) => {
-  const objective = db
-    .prepare('SELECT id, name, macro_area AS macroArea FROM training_objective_details WHERE id = ?')
-    .get(methodRow.objective_detail_id);
+  const objectiveRows = db
+    .prepare(`
+      SELECT d.id, d.name, d.macro_area AS macroArea
+      FROM training_method_objective_details m
+      JOIN training_objective_details d ON d.id = m.objective_detail_id
+      WHERE m.training_method_id = ?
+      ORDER BY d.name ASC
+    `)
+    .all(methodRow.id);
+
+  const categoryRows = db
+    .prepare(`
+      SELECT c.id, c.name
+      FROM training_method_categories m
+      JOIN training_categories c ON c.id = m.category_id
+      WHERE m.training_method_id = ?
+      ORDER BY c.name ASC
+    `)
+    .all(methodRow.id);
 
   const sets = db
     .prepare('SELECT id, set_order AS setOrder, series_count AS seriesCount, recovery_seconds AS recoverySeconds FROM training_method_sets WHERE training_method_id = ? ORDER BY set_order ASC')
@@ -235,6 +252,14 @@ const mapTrainingMethod = (methodRow) => {
       return { ...setRow, intervals };
     });
 
+  const stressScore = sets.reduce((total, set) => {
+    const perSetStress = set.intervals.reduce((acc, interval) => {
+      const weight = ZONE_STRESS_WEIGHTS[interval.intensityZone] || 1;
+      return acc + interval.durationSeconds * weight;
+    }, 0);
+    return total + perSetStress * set.seriesCount;
+  }, 0);
+
   return {
     id: methodRow.id,
     coachId: methodRow.coach_id,
@@ -242,23 +267,34 @@ const mapTrainingMethod = (methodRow) => {
     code: methodRow.code,
     macroArea: methodRow.macro_area,
     objectiveDetailId: methodRow.objective_detail_id,
-    objectiveDetailName: objective?.name || null,
+    objectiveDetailIds: objectiveRows.map((row) => row.id),
+    objectiveDetailNames: objectiveRows.map((row) => row.name),
     category: methodRow.category,
+    categoryIds: categoryRows.map((row) => row.id),
+    categoryNames: categoryRows.map((row) => row.name),
     period: methodRow.period,
     notes: methodRow.notes,
     methodType: methodRow.method_type,
     progressionIncrementPct: methodRow.progression_increment_pct,
     progression: methodRow.progression_json ? JSON.parse(methodRow.progression_json) : null,
     sets,
+    stressScore,
     createdAt: methodRow.created_at,
     updatedAt: methodRow.updated_at
   };
 };
 
 const validateTrainingMethodPayload = (payload) => {
-  const required = ['name', 'code', 'macroArea', 'objectiveDetailId', 'category', 'period', 'methodType'];
+  const required = ['name', 'code', 'macroArea', 'period', 'methodType'];
   for (const field of required) {
     if (!payload[field] && payload[field] !== 0) return `${field} è obbligatorio`;
+  }
+
+  if (!Array.isArray(payload.objectiveDetailIds) || payload.objectiveDetailIds.length === 0) {
+    return 'Selezionare almeno un dettaglio obiettivo';
+  }
+  if (!Array.isArray(payload.categoryIds) || payload.categoryIds.length === 0) {
+    return 'Selezionare almeno una categoria';
   }
 
   if (!TRAINING_MACRO_AREAS.has(payload.macroArea)) return 'Macro area non valida';
@@ -293,7 +329,6 @@ const validateTrainingMethodPayload = (payload) => {
 
   return null;
 };
-
 
 app.get('/api/status', (_req, res) => {
   const row = db.prepare('SELECT COUNT(*) AS count FROM users').get();
@@ -777,6 +812,37 @@ app.post('/api/training-objective-details', auth, (req, res) => {
   }
 });
 
+
+app.get('/api/training-categories', auth, (req, res) => {
+  if (!isCoach(req.user)) {
+    return res.status(403).json({ message: 'Solo i coach possono accedere alle categorie' });
+  }
+
+  const rows = db
+    .prepare('SELECT id, name, created_at AS createdAt FROM training_categories ORDER BY name ASC')
+    .all();
+  return res.json(rows);
+});
+
+app.post('/api/training-categories', auth, (req, res) => {
+  if (!isCoach(req.user)) {
+    return res.status(403).json({ message: 'Solo i coach possono creare categorie' });
+  }
+
+  const name = req.body?.name?.trim();
+  if (!name) {
+    return res.status(400).json({ message: 'name è obbligatorio' });
+  }
+
+  try {
+    const info = db.prepare('INSERT INTO training_categories (name) VALUES (?)').run(name);
+    const created = db.prepare('SELECT id, name, created_at AS createdAt FROM training_categories WHERE id = ?').get(info.lastInsertRowid);
+    return res.status(201).json(created);
+  } catch {
+    return res.status(409).json({ message: 'Categoria già esistente' });
+  }
+});
+
 app.get('/api/training-methods', auth, (req, res) => {
   if (!isCoach(req.user)) {
     return res.status(403).json({ message: 'Solo i coach possono accedere ai metodi' });
@@ -795,8 +861,15 @@ app.post('/api/training-methods', auth, (req, res) => {
   const validationError = validateTrainingMethodPayload(payload);
   if (validationError) return res.status(400).json({ message: validationError });
 
-  const objective = db.prepare('SELECT id FROM training_objective_details WHERE id = ?').get(Number(payload.objectiveDetailId));
-  if (!objective) return res.status(400).json({ message: 'Dettaglio obiettivo non trovato' });
+  const objectiveIds = [...new Set(payload.objectiveDetailIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
+  const categoryIds = [...new Set(payload.categoryIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
+  if (objectiveIds.length === 0) return res.status(400).json({ message: 'Dettagli obiettivo non validi' });
+  if (categoryIds.length === 0) return res.status(400).json({ message: 'Categorie non valide' });
+
+  const foundObjectiveCount = db.prepare(`SELECT COUNT(*) AS count FROM training_objective_details WHERE id IN (${objectiveIds.map(() => '?').join(',')})`).get(...objectiveIds).count;
+  if (foundObjectiveCount !== objectiveIds.length) return res.status(400).json({ message: 'Dettaglio obiettivo non trovato' });
+  const foundCategoryCount = db.prepare(`SELECT COUNT(*) AS count FROM training_categories WHERE id IN (${categoryIds.map(() => '?').join(',')})`).get(...categoryIds).count;
+  if (foundCategoryCount !== categoryIds.length) return res.status(400).json({ message: 'Categoria non trovata' });
 
   try {
     const info = db.prepare(`
@@ -807,14 +880,22 @@ app.post('/api/training-methods', auth, (req, res) => {
       payload.name.trim(),
       payload.code.trim(),
       payload.macroArea,
-      Number(payload.objectiveDetailId),
-      payload.category.trim(),
+      objectiveIds[0],
+      categoryIds.join(','),
       payload.period,
       payload.notes?.trim() || null,
       payload.methodType,
       payload.progressionIncrementPct ? Number(payload.progressionIncrementPct) : null,
       payload.progression ? JSON.stringify(payload.progression) : null
     );
+
+    objectiveIds.forEach((objectiveId) => {
+      db.prepare('INSERT INTO training_method_objective_details (training_method_id, objective_detail_id) VALUES (?, ?)').run(info.lastInsertRowid, objectiveId);
+    });
+
+    categoryIds.forEach((categoryId) => {
+      db.prepare('INSERT INTO training_method_categories (training_method_id, category_id) VALUES (?, ?)').run(info.lastInsertRowid, categoryId);
+    });
 
     for (let setIndex = 0; setIndex < payload.sets.length; setIndex += 1) {
       const set = payload.sets[setIndex];
@@ -876,6 +957,14 @@ app.post('/api/training-methods/:id/duplicate', auth, (req, res) => {
     source.progression_increment_pct,
     source.progression_json
   );
+
+  sourceMapped.objectiveDetailIds.forEach((objectiveId) => {
+    db.prepare('INSERT INTO training_method_objective_details (training_method_id, objective_detail_id) VALUES (?, ?)').run(copyInfo.lastInsertRowid, objectiveId);
+  });
+
+  sourceMapped.categoryIds.forEach((categoryId) => {
+    db.prepare('INSERT INTO training_method_categories (training_method_id, category_id) VALUES (?, ?)').run(copyInfo.lastInsertRowid, categoryId);
+  });
 
   sourceMapped.sets.forEach((set, setIndex) => {
     const setInfo = db.prepare('INSERT INTO training_method_sets (training_method_id, set_order, series_count, recovery_seconds) VALUES (?, ?, ?, ?)').run(

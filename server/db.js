@@ -158,4 +158,33 @@ db.exec(`
 db.exec('CREATE INDEX IF NOT EXISTS training_method_sets_method_idx ON training_method_sets(training_method_id, set_order);');
 db.exec('CREATE INDEX IF NOT EXISTS training_method_intervals_set_idx ON training_method_intervals(set_id, interval_order);');
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS training_categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS training_method_objective_details (
+    training_method_id INTEGER NOT NULL,
+    objective_detail_id INTEGER NOT NULL,
+    PRIMARY KEY (training_method_id, objective_detail_id),
+    FOREIGN KEY (training_method_id) REFERENCES training_methods(id) ON DELETE CASCADE,
+    FOREIGN KEY (objective_detail_id) REFERENCES training_objective_details(id)
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS training_method_categories (
+    training_method_id INTEGER NOT NULL,
+    category_id INTEGER NOT NULL,
+    PRIMARY KEY (training_method_id, category_id),
+    FOREIGN KEY (training_method_id) REFERENCES training_methods(id) ON DELETE CASCADE,
+    FOREIGN KEY (category_id) REFERENCES training_categories(id)
+  );
+`);
+
+
 export default db;

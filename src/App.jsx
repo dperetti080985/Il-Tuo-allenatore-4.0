@@ -84,8 +84,8 @@ const emptyTrainingMethodForm = {
   name: '',
   code: '',
   macroArea: 'metabolico',
-  objectiveDetailId: '',
-  category: '',
+  objectiveDetailIds: [],
+  categoryIds: [],
   period: 'costruzione',
   notes: '',
   methodType: 'single',
@@ -103,6 +103,8 @@ const zoneRules = [
   { zone: 'Z6', min: 121, max: 150 },
   { zone: 'Z7', min: 151, max: null }
 ];
+
+const zoneStressWeights = { Z1: 1, Z2: 2, Z3: 3, Z4: 5, Z5: 7, Z6: 9, Z7: 11 };
 
 const toRounded = (value) => Math.round(value);
 const emptyZoneForm = zoneRules.reduce((acc, rule) => {
@@ -193,9 +195,12 @@ function App() {
   const [selectedAthleteId, setSelectedAthleteId] = useState(null);
   const [editingSnapshotId, setEditingSnapshotId] = useState(null);
   const [trainingObjectiveDetails, setTrainingObjectiveDetails] = useState([]);
+  const [trainingCategories, setTrainingCategories] = useState([]);
   const [trainingMethods, setTrainingMethods] = useState([]);
   const [objectiveForm, setObjectiveForm] = useState({ name: '', macroArea: 'metabolico' });
+  const [categoryForm, setCategoryForm] = useState({ name: '' });
   const [trainingMethodForm, setTrainingMethodForm] = useState(emptyTrainingMethodForm);
+  const [autoZonesPreview, setAutoZonesPreview] = useState(computeAutoZones(null, null));
 
   const isEditing = useMemo(() => editingUserId !== null, [editingUserId]);
   const isCoachUser = currentUser?.userType === 'coach';
@@ -253,11 +258,13 @@ function App() {
 
 
   const loadTrainingCatalog = async (authToken = token) => {
-    const [details, methods] = await Promise.all([
+    const [details, categories, methods] = await Promise.all([
       api('/api/training-objective-details', { headers: { Authorization: `Bearer ${authToken}` } }),
+      api('/api/training-categories', { headers: { Authorization: `Bearer ${authToken}` } }),
       api('/api/training-methods', { headers: { Authorization: `Bearer ${authToken}` } })
     ]);
     setTrainingObjectiveDetails(details);
+    setTrainingCategories(categories);
     setTrainingMethods(methods);
   };
 
@@ -277,6 +284,23 @@ function App() {
     }
   };
 
+
+  const handleCreateCategory = async (e) => {
+    e.preventDefault();
+    setMessage('');
+    try {
+      await api('/api/training-categories', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(categoryForm)
+      });
+      setCategoryForm({ name: '' });
+      await loadTrainingCatalog();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
   const handleCreateTrainingMethod = async (e) => {
     e.preventDefault();
     setMessage('');
@@ -286,7 +310,7 @@ function App() {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify(trainingMethodForm)
       });
-      setTrainingMethodForm({ ...emptyTrainingMethodForm, objectiveDetailId: trainingMethodForm.objectiveDetailId });
+      setTrainingMethodForm({ ...emptyTrainingMethodForm, objectiveDetailIds: trainingMethodForm.objectiveDetailIds });
       await loadTrainingCatalog();
     } catch (err) {
       setMessage(err.message);
@@ -427,33 +451,13 @@ function App() {
     if (!athleteId) return;
 
     const payload = Object.fromEntries(Object.entries(athleteForm).map(([key, value]) => [key, key === 'recordedAt' ? value : toNullableNumber(value)]));
-    const autoZones = computeAutoZones(payload.thresholdHr, payload.thresholdPowerW);
-    const zonesOverride = {};
-
-    autoZones.forEach((zone) => {
-      const formZone = zoneForm[zone.zone];
-      const overrides = {};
-
-      if (zone.hr) {
-        const hrMin = toNullableNumber(formZone.hr.min);
-        const hrMax = toNullableNumber(formZone.hr.max);
-        if (hrMin !== zone.hr.min || hrMax !== zone.hr.max) {
-          overrides.hr = { min: hrMin, max: hrMax };
-        }
-      }
-
-      if (zone.power) {
-        const powerMin = toNullableNumber(formZone.power.min);
-        const powerMax = toNullableNumber(formZone.power.max);
-        if (powerMin !== zone.power.min || powerMax !== zone.power.max) {
-          overrides.power = { min: powerMin, max: powerMax };
-        }
-      }
-
-      if (Object.keys(overrides).length > 0) {
-        zonesOverride[zone.zone] = overrides;
-      }
-    });
+    const zonesOverride = Object.fromEntries(zoneRules.map((rule) => {
+      const current = zoneForm[rule.zone];
+      return [rule.zone, {
+        hr: { min: toNullableNumber(current.hr.min), max: toNullableNumber(current.hr.max) },
+        power: { min: toNullableNumber(current.power.min), max: toNullableNumber(current.power.max) }
+      }];
+    }));
 
     try {
       const method = editingSnapshotId ? 'PUT' : 'POST';
@@ -519,6 +523,68 @@ function App() {
     }
   };
 
+
+
+  const handleAutoCalculateZones = () => {
+    const calculated = computeAutoZones(toNullableNumber(athleteForm.thresholdHr), toNullableNumber(athleteForm.thresholdPowerW));
+    setAutoZonesPreview(calculated);
+    setZoneForm(formatZoneFormFromZones(calculated));
+  };
+
+  const toggleMultiValue = (field, value) => {
+    setTrainingMethodForm((prev) => {
+      const has = prev[field].includes(value);
+      return { ...prev, [field]: has ? prev[field].filter((v) => v !== value) : [...prev[field], value] };
+    });
+  };
+
+  const updateSetField = (setIndex, key, value) => {
+    setTrainingMethodForm((prev) => ({
+      ...prev,
+      sets: prev.sets.map((set, index) => (index === setIndex ? { ...set, [key]: value } : set))
+    }));
+  };
+
+  const updateIntervalField = (setIndex, intervalIndex, key, value) => {
+    setTrainingMethodForm((prev) => ({
+      ...prev,
+      sets: prev.sets.map((set, sIndex) =>
+        sIndex === setIndex
+          ? {
+              ...set,
+              intervals: set.intervals.map((interval, iIndex) => (iIndex === intervalIndex ? { ...interval, [key]: value } : interval))
+            }
+          : set
+      )
+    }));
+  };
+
+  const addSet = () => setTrainingMethodForm((prev) => ({ ...prev, sets: [...prev.sets, JSON.parse(JSON.stringify(emptyMethodSet))] }));
+  const removeSet = (setIndex) => setTrainingMethodForm((prev) => ({ ...prev, sets: prev.sets.filter((_, index) => index !== setIndex) }));
+  const addInterval = (setIndex) => {
+    const interval = { minutes: 1, seconds: 0, intensityZone: 'Z3', rpm: 90, rpe: '' };
+    setTrainingMethodForm((prev) => ({
+      ...prev,
+      sets: prev.sets.map((set, index) => (index === setIndex ? { ...set, intervals: [...set.intervals, interval] } : set))
+    }));
+  };
+  const removeInterval = (setIndex, intervalIndex) => setTrainingMethodForm((prev) => ({
+    ...prev,
+    sets: prev.sets.map((set, index) =>
+      index === setIndex ? { ...set, intervals: set.intervals.filter((_, iIndex) => iIndex !== intervalIndex) } : set
+    )
+  }));
+
+  const previewStressScore = useMemo(() => trainingMethodForm.sets.reduce((total, set) => {
+    const series = Number(set.seriesCount || 0);
+    const setStress = set.intervals.reduce((acc, interval) => {
+      const duration = Number(interval.minutes || 0) * 60 + Number(interval.seconds || 0);
+      const weight = zoneStressWeights[interval.intensityZone] || 1;
+      return acc + duration * weight;
+    }, 0);
+    return total + setStress * series;
+  }, 0), [trainingMethodForm]);
+
   const deleteUser = async (id) => {
     try {
       await api(`/api/users/${id}`, {
@@ -562,7 +628,6 @@ function App() {
   };
 
   const usersTitle = isCoachUser ? 'Gestione utenti' : 'Gestione profilo';
-  const autoZonesPreview = computeAutoZones(toNullableNumber(athleteForm.thresholdHr), toNullableNumber(athleteForm.thresholdPowerW));
   const currentPowerToWeight = toNullableNumber(athleteForm.thresholdPowerW) && toNullableNumber(athleteForm.weightKg)
     ? (toNullableNumber(athleteForm.thresholdPowerW) / toNullableNumber(athleteForm.weightKg)).toFixed(2)
     : '';
@@ -687,12 +752,29 @@ function App() {
                 <button type="submit">Aggiungi dettaglio obiettivo</button>
               </form>
 
+              <form onSubmit={handleCreateCategory}>
+                <h3>Categorie metodo</h3>
+                <label>Nome categoria<input value={categoryForm.name} onChange={(e) => setCategoryForm({ name: e.target.value })} required /></label>
+                <button type="submit">Aggiungi categoria</button>
+              </form>
+
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>ID</th><th>Dettaglio</th><th>Macro area</th></tr></thead>
+                  <thead><tr><th>Seleziona</th><th>ID</th><th>Dettaglio</th><th>Macro area</th></tr></thead>
                   <tbody>
                     {trainingObjectiveDetails.map((detail) => (
-                      <tr key={detail.id}><td>{detail.id}</td><td>{detail.name}</td><td>{detail.macroArea}</td></tr>
+                      <tr key={detail.id}><td><input type="checkbox" checked={trainingMethodForm.objectiveDetailIds.includes(detail.id)} onChange={() => toggleMultiValue('objectiveDetailIds', detail.id)} /></td><td>{detail.id}</td><td>{detail.name}</td><td>{detail.macroArea}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>Seleziona</th><th>ID</th><th>Categoria</th></tr></thead>
+                  <tbody>
+                    {trainingCategories.map((category) => (
+                      <tr key={category.id}><td><input type="checkbox" checked={trainingMethodForm.categoryIds.includes(category.id)} onChange={() => toggleMultiValue('categoryIds', category.id)} /></td><td>{category.id}</td><td>{category.name}</td></tr>
                     ))}
                   </tbody>
                 </table>
@@ -707,13 +789,6 @@ function App() {
                     {macroAreas.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
                   </select>
                 </label>
-                <label>Dettaglio obiettivo
-                  <select value={trainingMethodForm.objectiveDetailId} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, objectiveDetailId: e.target.value })} required>
-                    <option value="">Seleziona...</option>
-                    {trainingObjectiveDetails.filter((d) => d.macroArea === trainingMethodForm.macroArea).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-                  </select>
-                </label>
-                <label>Categoria<input value={trainingMethodForm.category} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, category: e.target.value })} required /></label>
                 <label>Periodo
                   <select value={trainingMethodForm.period} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, period: e.target.value })}>
                     {trainingPeriods.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
@@ -726,22 +801,55 @@ function App() {
                 </label>
                 <label>Incremento % settimanale<input type="number" step="0.1" value={trainingMethodForm.progressionIncrementPct} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, progressionIncrementPct: e.target.value })} /></label>
                 <label>Note<textarea value={trainingMethodForm.notes} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, notes: e.target.value })} /></label>
-                <p>Blocco base: {trainingMethodForm.sets[0].seriesCount} serie, recupero {trainingMethodForm.sets[0].recoveryMinutes}:{String(trainingMethodForm.sets[0].recoverySeconds).padStart(2, '0')}</p>
+
+                {trainingMethodForm.sets.map((set, setIndex) => (
+                  <div key={setIndex} className="card">
+                    <h4>Serie #{setIndex + 1}</h4>
+                    <label>Numero serie<input type="number" min="1" value={set.seriesCount} onChange={(e) => updateSetField(setIndex, 'seriesCount', e.target.value)} /></label>
+                    <div className="row">
+                      <label>Recupero minuti<input type="number" min="0" value={set.recoveryMinutes} onChange={(e) => updateSetField(setIndex, 'recoveryMinutes', e.target.value)} /></label>
+                      <label>Recupero secondi<input type="number" min="0" max="59" value={set.recoverySeconds} onChange={(e) => updateSetField(setIndex, 'recoverySeconds', e.target.value)} /></label>
+                    </div>
+                    <h5>Intervalli</h5>
+                    {set.intervals.map((interval, intervalIndex) => (
+                      <div key={`${setIndex}-${intervalIndex}`} className="row">
+                        <label>Min<input type="number" min="0" value={interval.minutes} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'minutes', e.target.value)} /></label>
+                        <label>Sec<input type="number" min="0" max="59" value={interval.seconds} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'seconds', e.target.value)} /></label>
+                        <label>Zona
+                          <select value={interval.intensityZone} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'intensityZone', e.target.value)}>
+                            {zoneRules.map((zone) => <option key={zone.zone} value={zone.zone}>{zone.zone}</option>)}
+                          </select>
+                        </label>
+                        <label>RPM<input type="number" min="0" value={interval.rpm} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'rpm', e.target.value)} /></label>
+                        <label>RPE<input type="number" min="0" step="0.5" value={interval.rpe} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'rpe', e.target.value)} /></label>
+                        {set.intervals.length > 1 && <button type="button" className="danger" onClick={() => removeInterval(setIndex, intervalIndex)}>Rimuovi intervallo</button>}
+                      </div>
+                    ))}
+                    <div className="actions">
+                      <button type="button" onClick={() => addInterval(setIndex)}>Aggiungi intervallo</button>
+                      {trainingMethodForm.sets.length > 1 && <button type="button" className="danger" onClick={() => removeSet(setIndex)}>Rimuovi serie</button>}
+                    </div>
+                  </div>
+                ))}
+                <div className="actions">
+                  <button type="button" onClick={addSet}>Aggiungi blocco serie</button>
+                </div>
+                <p>Punteggio stress stimato: <strong>{Math.round(previewStressScore)}</strong></p>
                 <button type="submit">Salva metodo</button>
               </form>
 
               <h3>Metodi salvati</h3>
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>Nome</th><th>Codice</th><th>Obiettivo</th><th>Periodo</th><th>Tipologia</th><th>Dettaglio</th><th>Azioni</th></tr></thead>
+                  <thead><tr><th>Nome</th><th>Codice</th><th>Obiettivi</th><th>Categorie</th><th>Stress</th><th>Dettaglio</th><th>Azioni</th></tr></thead>
                   <tbody>
                     {trainingMethods.map((method) => (
                       <tr key={method.id}>
                         <td>{method.name}</td>
                         <td>{method.code}</td>
-                        <td>{method.macroArea} / {method.objectiveDetailName}</td>
-                        <td>{method.period}</td>
-                        <td>{method.methodType}</td>
+                        <td>{(method.objectiveDetailNames || []).join(', ')}</td>
+                        <td>{(method.categoryNames || []).join(', ')}</td>
+                        <td>{method.stressScore ?? '-'}</td>
                         <td>
                           {method.sets.map((set) => (
                             <div key={set.id}>{set.seriesCount} serie, rec {Math.floor(set.recoverySeconds / 60)}:{String(set.recoverySeconds % 60).padStart(2, '0')} - {set.intervals.map((i) => `${i.minutes}m${i.seconds}s ${i.intensityZone || '-'} rpm ${i.rpm || '-'} rpe ${i.rpe || '-'}`).join(' | ')}</div>
@@ -778,7 +886,8 @@ function App() {
                       <input type="number" step="0.01" value={currentPowerToWeight} readOnly />
                     </label>
 
-                    <h4>Zone allenamento (calcolate automaticamente, modificabili)</h4>
+                    <h4>Zone allenamento (premi il pulsante per il calcolo automatico)</h4>
+                    <button type="button" onClick={handleAutoCalculateZones}>Calcola zone automatiche</button>
                     <div className="table-wrap">
                       <table>
                         <thead><tr><th>Zona</th><th>FC min</th><th>FC max</th><th>W min</th><th>W max</th></tr></thead>
