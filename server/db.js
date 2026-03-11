@@ -40,6 +40,14 @@ if (!existingColumns.has('user_type')) {
   db.exec("ALTER TABLE users ADD COLUMN user_type TEXT NOT NULL DEFAULT 'athlete' CHECK (user_type IN ('coach', 'athlete'));");
 }
 
+if (!existingColumns.has('athlete_metabolic_profile')) {
+  db.exec('ALTER TABLE users ADD COLUMN athlete_metabolic_profile TEXT;');
+}
+
+if (!existingColumns.has('athlete_performance_profile')) {
+  db.exec('ALTER TABLE users ADD COLUMN athlete_performance_profile TEXT;');
+}
+
 // Migrazione non distruttiva: converte email vuote in NULL per evitare conflitti su indice unico.
 db.exec("UPDATE users SET email = NULL WHERE email = '';");
 
@@ -234,6 +242,18 @@ db.exec(`
     PRIMARY KEY (athlete_id, discipline_id),
     FOREIGN KEY (athlete_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (discipline_id) REFERENCES disciplines(id)
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS coach_zone_configs (
+    coach_id INTEGER NOT NULL,
+    metric TEXT NOT NULL CHECK (metric IN ('hr', 'power')),
+    zone TEXT NOT NULL,
+    min_pct REAL NOT NULL,
+    max_pct REAL,
+    PRIMARY KEY (coach_id, metric, zone),
+    FOREIGN KEY (coach_id) REFERENCES users(id) ON DELETE CASCADE
   );
 `);
 
