@@ -94,6 +94,30 @@ const emptyTrainingMethodForm = {
   sets: [emptyMethodSet]
 };
 
+const cloneSet = (set = emptyMethodSet) => ({
+  seriesCount: Number(set.seriesCount ?? emptyMethodSet.seriesCount),
+  recoveryMinutes: Number(set.recoveryMinutes ?? emptyMethodSet.recoveryMinutes),
+  recoverySeconds: Number(set.recoverySeconds ?? emptyMethodSet.recoverySeconds),
+  intervals: (set.intervals || emptyMethodSet.intervals).map((interval) => ({ ...interval }))
+});
+
+const getProgressionMultipliers = (methodType, incrementPct) => {
+  const increment = Number(incrementPct || 0) / 100;
+  if (methodType === 'single') return [1];
+  if (methodType === 'monthly_weekly') return [1, 1 + increment, 1 + increment * 2, Math.max(0.5, 1 - increment)];
+  if (methodType === 'monthly_biweekly') return [1, 1 + increment];
+  return [1];
+};
+
+const buildAutoSets = (baseSet, methodType, incrementPct) => {
+  const normalizedSet = cloneSet(baseSet);
+  const baseSeries = Math.max(1, Number(normalizedSet.seriesCount || 1));
+  return getProgressionMultipliers(methodType, incrementPct).map((multiplier) => ({
+    ...cloneSet(normalizedSet),
+    seriesCount: Math.max(1, Math.round(baseSeries * multiplier))
+  }));
+};
+
 const zoneRules = [
   { zone: 'Z1', min: 0, max: 55 },
   { zone: 'Z2', min: 56, max: 75 },
@@ -200,6 +224,8 @@ function App() {
   const [objectiveForm, setObjectiveForm] = useState({ name: '', macroArea: 'metabolico' });
   const [categoryForm, setCategoryForm] = useState({ name: '' });
   const [trainingMethodForm, setTrainingMethodForm] = useState(emptyTrainingMethodForm);
+  const [editingMethodId, setEditingMethodId] = useState(null);
+  const [trainingConfigView, setTrainingConfigView] = useState('method');
   const [autoZonesPreview, setAutoZonesPreview] = useState(computeAutoZones(null, null));
 
   const isEditing = useMemo(() => editingUserId !== null, [editingUserId]);
@@ -305,12 +331,64 @@ function App() {
     e.preventDefault();
     setMessage('');
     try {
-      await api('/api/training-methods', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify(trainingMethodForm)
-      });
+      const payload = {
+        ...trainingMethodForm,
+        sets: buildAutoSets(trainingMethodForm.sets[0], trainingMethodForm.methodType, trainingMethodForm.progressionIncrementPct)
+      };
+      if (editingMethodId) {
+        await api(`/api/training-methods/${editingMethodId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify(payload)
+        });
+      } else {
+        await api('/api/training-methods', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify(payload)
+        });
+      }
+      setEditingMethodId(null);
       setTrainingMethodForm({ ...emptyTrainingMethodForm, objectiveDetailIds: trainingMethodForm.objectiveDetailIds });
+      await loadTrainingCatalog();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const startEditingMethod = (method) => {
+    const firstSet = method.sets?.[0] || emptyMethodSet;
+    setEditingMethodId(method.id);
+    setTrainingMethodForm({
+      name: method.name,
+      code: method.code,
+      macroArea: method.macroArea,
+      objectiveDetailIds: method.objectiveDetailIds || [],
+      categoryIds: method.categoryIds || [],
+      period: method.period,
+      notes: method.notes || '',
+      methodType: method.methodType,
+      progressionIncrementPct: method.progressionIncrementPct ?? 5,
+      progression: method.progression || emptyTrainingMethodForm.progression,
+      sets: [cloneSet(firstSet)]
+    });
+    setTrainingConfigView('method');
+  };
+
+  const cancelTrainingMethodEditing = () => {
+    setEditingMethodId(null);
+    setTrainingMethodForm(emptyTrainingMethodForm);
+  };
+
+  const deleteTrainingMethod = async (id) => {
+    try {
+      await api(`/api/training-methods/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (editingMethodId === id) {
+        cancelTrainingMethodEditing();
+      }
       await loadTrainingCatalog();
     } catch (err) {
       setMessage(err.message);
@@ -538,44 +616,41 @@ function App() {
     });
   };
 
-  const updateSetField = (setIndex, key, value) => {
+  const updateSetField = (_setIndex, key, value) => {
     setTrainingMethodForm((prev) => ({
       ...prev,
-      sets: prev.sets.map((set, index) => (index === setIndex ? { ...set, [key]: value } : set))
+      sets: [{ ...prev.sets[0], [key]: value }]
     }));
   };
 
-  const updateIntervalField = (setIndex, intervalIndex, key, value) => {
+  const updateIntervalField = (_setIndex, intervalIndex, key, value) => {
     setTrainingMethodForm((prev) => ({
       ...prev,
-      sets: prev.sets.map((set, sIndex) =>
-        sIndex === setIndex
-          ? {
-              ...set,
-              intervals: set.intervals.map((interval, iIndex) => (iIndex === intervalIndex ? { ...interval, [key]: value } : interval))
-            }
-          : set
-      )
+      sets: [{
+        ...prev.sets[0],
+        intervals: prev.sets[0].intervals.map((interval, iIndex) => (iIndex === intervalIndex ? { ...interval, [key]: value } : interval))
+      }]
     }));
   };
 
-  const addSet = () => setTrainingMethodForm((prev) => ({ ...prev, sets: [...prev.sets, JSON.parse(JSON.stringify(emptyMethodSet))] }));
-  const removeSet = (setIndex) => setTrainingMethodForm((prev) => ({ ...prev, sets: prev.sets.filter((_, index) => index !== setIndex) }));
-  const addInterval = (setIndex) => {
+  const addInterval = () => {
     const interval = { minutes: 1, seconds: 0, intensityZone: 'Z3', rpm: 90, rpe: '' };
     setTrainingMethodForm((prev) => ({
       ...prev,
-      sets: prev.sets.map((set, index) => (index === setIndex ? { ...set, intervals: [...set.intervals, interval] } : set))
+      sets: [{ ...prev.sets[0], intervals: [...prev.sets[0].intervals, interval] }]
     }));
   };
-  const removeInterval = (setIndex, intervalIndex) => setTrainingMethodForm((prev) => ({
+  const removeInterval = (_setIndex, intervalIndex) => setTrainingMethodForm((prev) => ({
     ...prev,
-    sets: prev.sets.map((set, index) =>
-      index === setIndex ? { ...set, intervals: set.intervals.filter((_, iIndex) => iIndex !== intervalIndex) } : set
-    )
+    sets: [{ ...prev.sets[0], intervals: prev.sets[0].intervals.filter((_, iIndex) => iIndex !== intervalIndex) }]
   }));
 
-  const previewStressScore = useMemo(() => trainingMethodForm.sets.reduce((total, set) => {
+  const autoCalculatedSets = useMemo(
+    () => buildAutoSets(trainingMethodForm.sets[0], trainingMethodForm.methodType, trainingMethodForm.progressionIncrementPct),
+    [trainingMethodForm]
+  );
+
+  const previewStressScore = useMemo(() => autoCalculatedSets.reduce((total, set) => {
     const series = Number(set.seriesCount || 0);
     const setStress = set.intervals.reduce((acc, interval) => {
       const duration = Number(interval.minutes || 0) * 60 + Number(interval.seconds || 0);
@@ -583,7 +658,7 @@ function App() {
       return acc + duration * weight;
     }, 0);
     return total + setStress * series;
-  }, 0), [trainingMethodForm]);
+  }, 0), [autoCalculatedSets]);
 
   const deleteUser = async (id) => {
     try {
@@ -740,103 +815,138 @@ function App() {
 
           {mode === 'training-methods' && isCoachUser && (
             <section className="card">
-              <h2>Anagrafica metodi di allenamento</h2>
-              <form onSubmit={handleCreateObjectiveDetail}>
-                <h3>Dettaglio obiettivo</h3>
-                <label>Nome dettaglio obiettivo<input value={objectiveForm.name} onChange={(e) => setObjectiveForm({ ...objectiveForm, name: e.target.value })} required /></label>
-                <label>Macro area
-                  <select value={objectiveForm.macroArea} onChange={(e) => setObjectiveForm({ ...objectiveForm, macroArea: e.target.value })}>
-                    {macroAreas.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-                  </select>
-                </label>
-                <button type="submit">Aggiungi dettaglio obiettivo</button>
-              </form>
-
-              <form onSubmit={handleCreateCategory}>
-                <h3>Categorie metodo</h3>
-                <label>Nome categoria<input value={categoryForm.name} onChange={(e) => setCategoryForm({ name: e.target.value })} required /></label>
-                <button type="submit">Aggiungi categoria</button>
-              </form>
-
-              <div className="table-wrap">
-                <table>
-                  <thead><tr><th>Seleziona</th><th>ID</th><th>Dettaglio</th><th>Macro area</th></tr></thead>
-                  <tbody>
-                    {trainingObjectiveDetails.map((detail) => (
-                      <tr key={detail.id}><td><input type="checkbox" checked={trainingMethodForm.objectiveDetailIds.includes(detail.id)} onChange={() => toggleMultiValue('objectiveDetailIds', detail.id)} /></td><td>{detail.id}</td><td>{detail.name}</td><td>{detail.macroArea}</td></tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="table-wrap">
-                <table>
-                  <thead><tr><th>Seleziona</th><th>ID</th><th>Categoria</th></tr></thead>
-                  <tbody>
-                    {trainingCategories.map((category) => (
-                      <tr key={category.id}><td><input type="checkbox" checked={trainingMethodForm.categoryIds.includes(category.id)} onChange={() => toggleMultiValue('categoryIds', category.id)} /></td><td>{category.id}</td><td>{category.name}</td></tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              <form onSubmit={handleCreateTrainingMethod}>
-                <h3>Nuovo metodo</h3>
-                <label>Nome<input value={trainingMethodForm.name} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, name: e.target.value })} required /></label>
-                <label>Codice<input value={trainingMethodForm.code} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, code: e.target.value })} required /></label>
-                <label>Macro area
-                  <select value={trainingMethodForm.macroArea} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, macroArea: e.target.value })}>
-                    {macroAreas.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-                  </select>
-                </label>
-                <label>Periodo
-                  <select value={trainingMethodForm.period} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, period: e.target.value })}>
-                    {trainingPeriods.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-                  </select>
-                </label>
-                <label>Tipologia
-                  <select value={trainingMethodForm.methodType} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, methodType: e.target.value })}>
-                    {trainingMethodTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-                  </select>
-                </label>
-                <label>Incremento % settimanale<input type="number" step="0.1" value={trainingMethodForm.progressionIncrementPct} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, progressionIncrementPct: e.target.value })} /></label>
-                <label>Note<textarea value={trainingMethodForm.notes} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, notes: e.target.value })} /></label>
-
-                {trainingMethodForm.sets.map((set, setIndex) => (
-                  <div key={setIndex} className="card">
-                    <h4>Serie #{setIndex + 1}</h4>
-                    <label>Numero serie<input type="number" min="1" value={set.seriesCount} onChange={(e) => updateSetField(setIndex, 'seriesCount', e.target.value)} /></label>
-                    <div className="row">
-                      <label>Recupero minuti<input type="number" min="0" value={set.recoveryMinutes} onChange={(e) => updateSetField(setIndex, 'recoveryMinutes', e.target.value)} /></label>
-                      <label>Recupero secondi<input type="number" min="0" max="59" value={set.recoverySeconds} onChange={(e) => updateSetField(setIndex, 'recoverySeconds', e.target.value)} /></label>
-                    </div>
-                    <h5>Intervalli</h5>
-                    {set.intervals.map((interval, intervalIndex) => (
-                      <div key={`${setIndex}-${intervalIndex}`} className="row">
-                        <label>Min<input type="number" min="0" value={interval.minutes} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'minutes', e.target.value)} /></label>
-                        <label>Sec<input type="number" min="0" max="59" value={interval.seconds} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'seconds', e.target.value)} /></label>
-                        <label>Zona
-                          <select value={interval.intensityZone} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'intensityZone', e.target.value)}>
-                            {zoneRules.map((zone) => <option key={zone.zone} value={zone.zone}>{zone.zone}</option>)}
-                          </select>
-                        </label>
-                        <label>RPM<input type="number" min="0" value={interval.rpm} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'rpm', e.target.value)} /></label>
-                        <label>RPE<input type="number" min="0" step="0.5" value={interval.rpe} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'rpe', e.target.value)} /></label>
-                        {set.intervals.length > 1 && <button type="button" className="danger" onClick={() => removeInterval(setIndex, intervalIndex)}>Rimuovi intervallo</button>}
-                      </div>
-                    ))}
-                    <div className="actions">
-                      <button type="button" onClick={() => addInterval(setIndex)}>Aggiungi intervallo</button>
-                      {trainingMethodForm.sets.length > 1 && <button type="button" className="danger" onClick={() => removeSet(setIndex)}>Rimuovi serie</button>}
-                    </div>
-                  </div>
-                ))}
+              <div className="row">
+                <h2>Metodi di allenamento</h2>
                 <div className="actions">
-                  <button type="button" onClick={addSet}>Aggiungi blocco serie</button>
+                  <button type="button" className={trainingConfigView === 'method' ? '' : 'secondary'} onClick={() => setTrainingConfigView('method')}>Metodo</button>
+                  <button type="button" className={trainingConfigView === 'registry' ? '' : 'secondary'} onClick={() => setTrainingConfigView('registry')}>Anagrafiche</button>
                 </div>
-                <p>Punteggio stress stimato: <strong>{Math.round(previewStressScore)}</strong></p>
-                <button type="submit">Salva metodo</button>
-              </form>
+              </div>
+
+              {trainingConfigView === 'registry' && (
+                <div className="split-panels">
+                  <form onSubmit={handleCreateObjectiveDetail} className="subcard">
+                    <h3>Dettaglio obiettivo</h3>
+                    <label>Nome dettaglio obiettivo<input value={objectiveForm.name} onChange={(e) => setObjectiveForm({ ...objectiveForm, name: e.target.value })} required /></label>
+                    <label>Macro area
+                      <select value={objectiveForm.macroArea} onChange={(e) => setObjectiveForm({ ...objectiveForm, macroArea: e.target.value })}>
+                        {macroAreas.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                      </select>
+                    </label>
+                    <button type="submit">Aggiungi dettaglio obiettivo</button>
+                  </form>
+
+                  <form onSubmit={handleCreateCategory} className="subcard">
+                    <h3>Categorie metodo</h3>
+                    <label>Nome categoria<input value={categoryForm.name} onChange={(e) => setCategoryForm({ name: e.target.value })} required /></label>
+                    <button type="submit">Aggiungi categoria</button>
+                  </form>
+
+                  <div className="table-wrap subcard">
+                    <h3>Dettagli obiettivo</h3>
+                    <table>
+                      <thead><tr><th>ID</th><th>Dettaglio</th><th>Macro area</th></tr></thead>
+                      <tbody>
+                        {trainingObjectiveDetails.map((detail) => (
+                          <tr key={detail.id}><td>{detail.id}</td><td>{detail.name}</td><td>{detail.macroArea}</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="table-wrap subcard">
+                    <h3>Categorie</h3>
+                    <table>
+                      <thead><tr><th>ID</th><th>Nome</th></tr></thead>
+                      <tbody>
+                        {trainingCategories.map((category) => (
+                          <tr key={category.id}><td>{category.id}</td><td>{category.name}</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {trainingConfigView === 'method' && (
+                <form onSubmit={handleCreateTrainingMethod}>
+                  <h3>{editingMethodId ? `Modifica metodo #${editingMethodId}` : 'Nuovo metodo'}</h3>
+                  <label>Nome metodo<input value={trainingMethodForm.name} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, name: e.target.value })} required /></label>
+                  <label>Codice metodo<input value={trainingMethodForm.code} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, code: e.target.value })} required /></label>
+                  <label>Macro area<select value={trainingMethodForm.macroArea} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, macroArea: e.target.value })}>{macroAreas.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+                  <label>Periodo<select value={trainingMethodForm.period} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, period: e.target.value })}>{trainingPeriods.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+                  <label>Tipologia metodo<select value={trainingMethodForm.methodType} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, methodType: e.target.value })}>{trainingMethodTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+                  <label>Incremento settimanale (%)<input type="number" min="0" max="100" step="0.5" value={trainingMethodForm.progressionIncrementPct} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, progressionIncrementPct: e.target.value })} /></label>
+                  <label>Note<textarea value={trainingMethodForm.notes} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, notes: e.target.value })} /></label>
+
+                  <div className="table-wrap">
+                    <h4>Seleziona dettagli obiettivo</h4>
+                    <table>
+                      <thead><tr><th>Seleziona</th><th>ID</th><th>Dettaglio</th><th>Macro area</th></tr></thead>
+                      <tbody>
+                        {trainingObjectiveDetails.map((detail) => (
+                          <tr key={detail.id}><td><input type="checkbox" checked={trainingMethodForm.objectiveDetailIds.includes(detail.id)} onChange={() => toggleMultiValue('objectiveDetailIds', detail.id)} /></td><td>{detail.id}</td><td>{detail.name}</td><td>{detail.macroArea}</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="table-wrap">
+                    <h4>Seleziona categorie</h4>
+                    <table>
+                      <thead><tr><th>Seleziona</th><th>ID</th><th>Categoria</th></tr></thead>
+                      <tbody>
+                        {trainingCategories.map((category) => (
+                          <tr key={category.id}><td><input type="checkbox" checked={trainingMethodForm.categoryIds.includes(category.id)} onChange={() => toggleMultiValue('categoryIds', category.id)} /></td><td>{category.id}</td><td>{category.name}</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {trainingMethodForm.sets.map((set, setIndex) => (
+                    <div key={`set-${setIndex}`} className="edit-form">
+                      <h4>Serie base (le successive sono calcolate automaticamente)</h4>
+                      <div className="set-grid">
+                        <label className="compact-field">Numero serie<input className="short-input" type="number" min="1" value={set.seriesCount} onChange={(e) => updateSetField(setIndex, 'seriesCount', e.target.value)} /></label>
+                        <label className="compact-field">Recupero minuti<input className="short-input" type="number" min="0" value={set.recoveryMinutes} onChange={(e) => updateSetField(setIndex, 'recoveryMinutes', e.target.value)} /></label>
+                        <label className="compact-field">Recupero secondi<input className="short-input" type="number" min="0" max="59" value={set.recoverySeconds} onChange={(e) => updateSetField(setIndex, 'recoverySeconds', e.target.value)} /></label>
+                      </div>
+                      {set.intervals.map((interval, intervalIndex) => (
+                        <div key={`interval-${intervalIndex}`} className="edit-form">
+                          <h5>Intervallo #{intervalIndex + 1}</h5>
+                          <label>Minuti<input type="number" min="0" value={interval.minutes} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'minutes', e.target.value)} /></label>
+                          <label>Secondi<input type="number" min="0" max="59" value={interval.seconds} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'seconds', e.target.value)} /></label>
+                          <label>Zona<select value={interval.intensityZone} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'intensityZone', e.target.value)}>{zoneRules.map((rule) => <option key={rule.zone} value={rule.zone}>{rule.zone}</option>)}</select></label>
+                          <label>RPM<input type="number" min="0" value={interval.rpm} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'rpm', e.target.value)} /></label>
+                          <label>RPE<input type="number" min="0" step="0.5" value={interval.rpe} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'rpe', e.target.value)} /></label>
+                          {set.intervals.length > 1 && <button type="button" className="danger" onClick={() => removeInterval(setIndex, intervalIndex)}>Rimuovi intervallo</button>}
+                        </div>
+                      ))}
+                      <div className="actions">
+                        <button type="button" onClick={() => addInterval(setIndex)}>Aggiungi intervallo</button>
+                      </div>
+                    </div>
+                  ))}
+
+                  <div className="table-wrap">
+                    <h4>Serie generate automaticamente</h4>
+                    <table>
+                      <thead><tr><th>Settimana</th><th>Serie</th><th>Recupero</th></tr></thead>
+                      <tbody>
+                        {autoCalculatedSets.map((set, index) => (
+                          <tr key={`auto-${index}`}><td>{index + 1}</td><td>{set.seriesCount}</td><td>{set.recoveryMinutes}m {set.recoverySeconds}s</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <p>Punteggio stress stimato: <strong>{Math.round(previewStressScore)}</strong></p>
+                  <div className="actions">
+                    <button type="submit">{editingMethodId ? 'Aggiorna metodo' : 'Salva metodo'}</button>
+                    {editingMethodId && <button type="button" className="secondary" onClick={cancelTrainingMethodEditing}>Annulla modifica</button>}
+                  </div>
+                </form>
+              )}
 
               <h3>Metodi salvati</h3>
               <div className="table-wrap">
@@ -855,7 +965,13 @@ function App() {
                             <div key={set.id}>{set.seriesCount} serie, rec {Math.floor(set.recoverySeconds / 60)}:{String(set.recoverySeconds % 60).padStart(2, '0')} - {set.intervals.map((i) => `${i.minutes}m${i.seconds}s ${i.intensityZone || '-'} rpm ${i.rpm || '-'} rpe ${i.rpe || '-'}`).join(' | ')}</div>
                           ))}
                         </td>
-                        <td><button type="button" onClick={() => duplicateTrainingMethod(method.id)}>Duplica</button></td>
+                        <td>
+                          <div className="actions">
+                            <button type="button" onClick={() => startEditingMethod(method)}>Modifica</button>
+                            <button type="button" className="danger" onClick={() => deleteTrainingMethod(method.id)}>Elimina</button>
+                            <button type="button" onClick={() => duplicateTrainingMethod(method.id)}>Duplica</button>
+                          </div>
+                        </td>
                       </tr>
                     ))}
                   </tbody>

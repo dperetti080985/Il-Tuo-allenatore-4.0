@@ -930,6 +930,87 @@ app.post('/api/training-methods', auth, (req, res) => {
   }
 });
 
+app.put('/api/training-methods/:id', auth, (req, res) => {
+  if (!isCoach(req.user)) {
+    return res.status(403).json({ message: 'Solo i coach possono modificare metodi' });
+  }
+
+  const methodId = Number(req.params.id);
+  const existing = db.prepare('SELECT id FROM training_methods WHERE id = ? AND coach_id = ?').get(methodId, req.user.id);
+  if (!existing) return res.status(404).json({ message: 'Metodo non trovato' });
+
+  const payload = req.body || {};
+  const validationError = validateTrainingMethodPayload(payload);
+  if (validationError) return res.status(400).json({ message: validationError });
+
+  const objectiveIds = [...new Set(payload.objectiveDetailIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
+  const categoryIds = [...new Set(payload.categoryIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
+  if (objectiveIds.length === 0) return res.status(400).json({ message: 'Dettagli obiettivo non validi' });
+  if (categoryIds.length === 0) return res.status(400).json({ message: 'Categorie non valide' });
+
+  try {
+    db.prepare(`
+      UPDATE training_methods
+      SET name = ?, code = ?, macro_area = ?, objective_detail_id = ?, category = ?, period = ?, notes = ?, method_type = ?, progression_increment_pct = ?, progression_json = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND coach_id = ?
+    `).run(
+      payload.name.trim(),
+      payload.code.trim(),
+      payload.macroArea,
+      objectiveIds[0],
+      categoryIds.join(','),
+      payload.period,
+      payload.notes?.trim() || null,
+      payload.methodType,
+      payload.progressionIncrementPct ? Number(payload.progressionIncrementPct) : null,
+      payload.progression ? JSON.stringify(payload.progression) : null,
+      methodId,
+      req.user.id
+    );
+
+    db.prepare('DELETE FROM training_method_objective_details WHERE training_method_id = ?').run(methodId);
+    db.prepare('DELETE FROM training_method_categories WHERE training_method_id = ?').run(methodId);
+    db.prepare('DELETE FROM training_method_intervals WHERE set_id IN (SELECT id FROM training_method_sets WHERE training_method_id = ?)').run(methodId);
+    db.prepare('DELETE FROM training_method_sets WHERE training_method_id = ?').run(methodId);
+
+    objectiveIds.forEach((objectiveId) => {
+      db.prepare('INSERT INTO training_method_objective_details (training_method_id, objective_detail_id) VALUES (?, ?)').run(methodId, objectiveId);
+    });
+
+    categoryIds.forEach((categoryId) => {
+      db.prepare('INSERT INTO training_method_categories (training_method_id, category_id) VALUES (?, ?)').run(methodId, categoryId);
+    });
+
+    for (let setIndex = 0; setIndex < payload.sets.length; setIndex += 1) {
+      const set = payload.sets[setIndex];
+      const recovery = secondsFromParts(set.recoveryMinutes, set.recoverySeconds);
+      const setInfo = db.prepare('INSERT INTO training_method_sets (training_method_id, set_order, series_count, recovery_seconds) VALUES (?, ?, ?, ?)').run(
+        methodId,
+        setIndex + 1,
+        Number(set.seriesCount),
+        recovery
+      );
+
+      for (let intervalIndex = 0; intervalIndex < set.intervals.length; intervalIndex += 1) {
+        const interval = set.intervals[intervalIndex];
+        db.prepare('INSERT INTO training_method_intervals (set_id, interval_order, duration_seconds, intensity_zone, rpm, rpe) VALUES (?, ?, ?, ?, ?, ?)').run(
+          setInfo.lastInsertRowid,
+          intervalIndex + 1,
+          secondsFromParts(interval.minutes, interval.seconds),
+          interval.intensityZone?.trim() || null,
+          interval.rpm === '' || interval.rpm === null || interval.rpm === undefined ? null : Number(interval.rpm),
+          interval.rpe === '' || interval.rpe === null || interval.rpe === undefined ? null : Number(interval.rpe)
+        );
+      }
+    }
+
+    const updated = db.prepare('SELECT * FROM training_methods WHERE id = ?').get(methodId);
+    return res.json(mapTrainingMethod(updated));
+  } catch {
+    return res.status(409).json({ message: 'Codice metodo già esistente per questo coach' });
+  }
+});
+
 app.post('/api/training-methods/:id/duplicate', auth, (req, res) => {
   if (!isCoach(req.user)) {
     return res.status(403).json({ message: 'Solo i coach possono duplicare metodi' });
@@ -988,6 +1069,17 @@ app.post('/api/training-methods/:id/duplicate', auth, (req, res) => {
 
   const created = db.prepare('SELECT * FROM training_methods WHERE id = ?').get(copyInfo.lastInsertRowid);
   return res.status(201).json(mapTrainingMethod(created));
+});
+
+app.delete('/api/training-methods/:id', auth, (req, res) => {
+  if (!isCoach(req.user)) {
+    return res.status(403).json({ message: 'Solo i coach possono eliminare metodi' });
+  }
+
+  const methodId = Number(req.params.id);
+  const info = db.prepare('DELETE FROM training_methods WHERE id = ? AND coach_id = ?').run(methodId, req.user.id);
+  if (info.changes === 0) return res.status(404).json({ message: 'Metodo non trovato' });
+  return res.json({ ok: true });
 });
 
 app.delete('/api/users/:id', auth, (req, res) => {
