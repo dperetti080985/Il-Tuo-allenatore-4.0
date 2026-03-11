@@ -163,6 +163,29 @@ const buildProfileResponse = (row) => {
 
 const canAccessAthlete = (requestUser, athleteId) => isCoach(requestUser) || requestUser.id === athleteId;
 
+const getAthleteLastProfileId = (athleteId) => {
+  const row = db
+    .prepare('SELECT id FROM athlete_profiles WHERE user_id = ? ORDER BY recorded_at DESC, id DESC LIMIT 1')
+    .get(athleteId);
+  return row?.id ?? null;
+};
+
+const getCoachUnreadMap = (coachId) => {
+  const athletes = db.prepare("SELECT id FROM users WHERE user_type = 'athlete'").all();
+  const viewedRows = db.prepare('SELECT athlete_id AS athleteId, last_seen_profile_id AS lastSeenProfileId FROM coach_athlete_views WHERE coach_id = ?').all(coachId);
+  const viewedByAthlete = new Map(viewedRows.map((row) => [row.athleteId, row.lastSeenProfileId]));
+
+  const unreadMap = {};
+  for (const athlete of athletes) {
+    const latestProfileId = getAthleteLastProfileId(athlete.id);
+    const lastSeenProfileId = viewedByAthlete.get(athlete.id) ?? null;
+    unreadMap[athlete.id] = latestProfileId !== null && latestProfileId !== lastSeenProfileId;
+  }
+
+  return unreadMap;
+};
+
+
 app.get('/api/status', (_req, res) => {
   const row = db.prepare('SELECT COUNT(*) AS count FROM users').get();
   res.json({ hasUsers: row.count > 0, usersCount: row.count });
@@ -261,7 +284,13 @@ app.get('/api/users', auth, (req, res) => {
       `)
       .all();
 
-    return res.json(users);
+    const unreadMap = getCoachUnreadMap(req.user.id);
+    const usersWithUpdates = users.map((user) => ({
+      ...user,
+      hasUnreadSnapshot: user.userType === 'athlete' ? Boolean(unreadMap[user.id]) : false
+    }));
+
+    return res.json(usersWithUpdates);
   }
 
   const currentUser = db
@@ -449,6 +478,36 @@ app.post('/api/athletes/:id/profile-history', auth, (req, res) => {
 
   const created = db.prepare('SELECT * FROM athlete_profiles WHERE id = ?').get(info.lastInsertRowid);
   return res.status(201).json(buildProfileResponse(created));
+});
+
+
+app.patch('/api/athletes/:id/profile-history/seen', auth, (req, res) => {
+  if (!isCoach(req.user)) {
+    return res.status(403).json({ message: 'Solo un coach può confermare la visualizzazione' });
+  }
+
+  const athleteId = Number(req.params.id);
+  const athlete = db.prepare('SELECT id, user_type AS userType FROM users WHERE id = ?').get(athleteId);
+  if (!athlete) {
+    return res.status(404).json({ message: 'Utente non trovato' });
+  }
+
+  if (athlete.userType !== 'athlete') {
+    return res.status(400).json({ message: 'Operazione disponibile solo per utenti atleta' });
+  }
+
+  const lastProfileId = getAthleteLastProfileId(athleteId);
+
+  db.prepare(`
+    INSERT INTO coach_athlete_views (coach_id, athlete_id, last_seen_profile_id, updated_at)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(coach_id, athlete_id)
+    DO UPDATE SET
+      last_seen_profile_id = excluded.last_seen_profile_id,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(req.user.id, athleteId, lastProfileId);
+
+  return res.json({ ok: true, athleteId, lastSeenProfileId: lastProfileId });
 });
 
 app.delete('/api/users/:id', auth, (req, res) => {

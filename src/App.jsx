@@ -33,6 +33,60 @@ const emptyAthleteForm = {
   cp20MinW: ''
 };
 
+
+const athleteFieldLabels = {
+  recordedAt: 'Data rilevazione',
+  heightCm: 'Altezza (cm)',
+  weightKg: 'Peso (kg)',
+  aerobicHr: 'FC aerobica',
+  maxHr: 'FC max',
+  thresholdHr: 'FC soglia',
+  thresholdPowerW: 'Potenza soglia (W)',
+  maxPowerW: 'Potenza max (W)',
+  cp2MinW: 'CP 2 min (W)',
+  cp5MinW: 'CP 5 min (W)',
+  cp20MinW: 'CP 20 min (W)'
+};
+
+const zoneRules = [
+  { zone: 'Z1', min: 0, max: 55 },
+  { zone: 'Z2', min: 56, max: 75 },
+  { zone: 'Z3', min: 76, max: 90 },
+  { zone: 'Z4', min: 91, max: 105 },
+  { zone: 'Z5', min: 106, max: 120 },
+  { zone: 'Z6', min: 121, max: 150 },
+  { zone: 'Z7', min: 151, max: null }
+];
+
+const toRounded = (value) => Math.round(value);
+const emptyZoneForm = zoneRules.reduce((acc, rule) => {
+  acc[rule.zone] = { hr: { min: '', max: '' }, power: { min: '', max: '' } };
+  return acc;
+}, {});
+
+const computeAutoZones = (thresholdHr, thresholdPowerW) =>
+  zoneRules.map((rule) => ({
+    zone: rule.zone,
+    hr: thresholdHr ? { min: toRounded((thresholdHr * rule.min) / 100), max: rule.max === null ? null : toRounded((thresholdHr * rule.max) / 100) } : null,
+    power: thresholdPowerW ? { min: toRounded((thresholdPowerW * rule.min) / 100), max: rule.max === null ? null : toRounded((thresholdPowerW * rule.max) / 100) } : null
+  }));
+
+const formatZoneFormFromZones = (zones = []) => {
+  const next = JSON.parse(JSON.stringify(emptyZoneForm));
+  zones.forEach((zone) => {
+    if (!next[zone.zone]) return;
+    if (zone.hr) {
+      next[zone.zone].hr.min = zone.hr.min ?? '';
+      next[zone.zone].hr.max = zone.hr.max ?? '';
+    }
+    if (zone.power) {
+      next[zone.zone].power.min = zone.power.min ?? '';
+      next[zone.zone].power.max = zone.power.max ?? '';
+    }
+  });
+  return next;
+};
+
 const parseStoredUser = () => {
   try {
     const raw = localStorage.getItem('user');
@@ -88,6 +142,7 @@ function App() {
   const [editingUserId, setEditingUserId] = useState(null);
   const [editForm, setEditForm] = useState(emptyUserForm);
   const [athleteForm, setAthleteForm] = useState(emptyAthleteForm);
+  const [zoneForm, setZoneForm] = useState(emptyZoneForm);
   const [athleteHistory, setAthleteHistory] = useState([]);
   const [selectedAthleteId, setSelectedAthleteId] = useState(null);
 
@@ -119,6 +174,27 @@ function App() {
       headers: { Authorization: `Bearer ${authToken}` }
     });
     setAthleteHistory(data);
+
+    if (data.length > 0) {
+      const latest = data[0];
+      setAthleteForm({
+        recordedAt: new Date().toISOString().slice(0, 10),
+        heightCm: latest.heightCm ?? '',
+        weightKg: latest.weightKg ?? '',
+        aerobicHr: latest.aerobicHr ?? '',
+        maxHr: latest.maxHr ?? '',
+        thresholdHr: latest.thresholdHr ?? '',
+        thresholdPowerW: latest.thresholdPowerW ?? '',
+        maxPowerW: latest.maxPowerW ?? '',
+        cp2MinW: latest.cp2MinW ?? '',
+        cp5MinW: latest.cp5MinW ?? '',
+        cp20MinW: latest.cp20MinW ?? ''
+      });
+      setZoneForm(formatZoneFormFromZones(latest.zones));
+    } else {
+      setAthleteForm({ ...emptyAthleteForm, recordedAt: new Date().toISOString().slice(0, 10) });
+      setZoneForm(emptyZoneForm);
+    }
   };
 
   useEffect(() => {
@@ -236,6 +312,35 @@ function App() {
     e.preventDefault();
     if (!athleteId) return;
 
+    const payload = Object.fromEntries(Object.entries(athleteForm).map(([key, value]) => [key, key === 'recordedAt' ? value : toNullableNumber(value)]));
+    const autoZones = computeAutoZones(payload.thresholdHr, payload.thresholdPowerW);
+    const zonesOverride = {};
+
+    autoZones.forEach((zone) => {
+      const formZone = zoneForm[zone.zone];
+      const overrides = {};
+
+      if (zone.hr) {
+        const hrMin = toNullableNumber(formZone.hr.min);
+        const hrMax = toNullableNumber(formZone.hr.max);
+        if (hrMin !== zone.hr.min || hrMax !== zone.hr.max) {
+          overrides.hr = { min: hrMin, max: hrMax };
+        }
+      }
+
+      if (zone.power) {
+        const powerMin = toNullableNumber(formZone.power.min);
+        const powerMax = toNullableNumber(formZone.power.max);
+        if (powerMin !== zone.power.min || powerMax !== zone.power.max) {
+          overrides.power = { min: powerMin, max: powerMax };
+        }
+      }
+
+      if (Object.keys(overrides).length > 0) {
+        zonesOverride[zone.zone] = overrides;
+      }
+    });
+
     try {
       await api(`/api/athletes/${athleteId}/profile-history`, {
         method: 'POST',
@@ -243,12 +348,9 @@ function App() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify({
-          ...Object.fromEntries(Object.entries(athleteForm).map(([key, value]) => [key, key === 'recordedAt' ? value : toNullableNumber(value)]))
-        })
+        body: JSON.stringify({ ...payload, zonesOverride })
       });
       await loadAthleteHistory(athleteId);
-      setAthleteForm({ ...emptyAthleteForm, recordedAt: new Date().toISOString().slice(0, 10) });
       setMessage('Snapshot atletico salvato.');
     } catch (err) {
       setMessage(err.message);
@@ -276,6 +378,13 @@ function App() {
     setSelectedAthleteId(id);
     setMode('athlete-profile');
     await loadAthleteHistory(id);
+    if (isCoachUser) {
+      await api(`/api/athletes/${id}/profile-history/seen`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      await loadUsers();
+    }
   };
 
   const logout = () => {
@@ -291,6 +400,7 @@ function App() {
   };
 
   const usersTitle = isCoachUser ? 'Gestione utenti' : 'Gestione profilo';
+  const autoZonesPreview = computeAutoZones(toNullableNumber(athleteForm.thresholdHr), toNullableNumber(athleteForm.thresholdPowerW));
 
   if (status.loading) return <main className="container">Caricamento...</main>;
 
@@ -384,7 +494,7 @@ function App() {
                       <tbody>
                         {users.map((u) => (
                           <tr key={u.id}>
-                            <td>{u.id}</td><td>{u.username}</td><td>{u.firstName}</td><td>{u.lastName}</td><td>{u.email}</td><td>{u.phone}</td><td>{u.userType === 'coach' ? 'Coach' : 'Atleta'}</td>
+                            <td>{u.id}</td><td>{u.username} {u.hasUnreadSnapshot && <span title="Nuovo snapshot non ancora visualizzato">✅</span>}</td><td>{u.firstName}</td><td>{u.lastName}</td><td>{u.email}</td><td>{u.phone}</td><td>{u.userType === 'coach' ? 'Coach' : 'Atleta'}</td>
                             <td><div className="actions"><button type="button" onClick={() => startEditing(u)}>Modifica</button>{u.userType === 'athlete' && isCoachUser && <button type="button" onClick={() => openAthleteProfile(u.id)}>Profilo atleta</button>}{isCoachUser && <button type="button" onClick={() => deleteUser(u.id)} className="danger">Elimina</button>}</div></td>
                           </tr>
                         ))}
@@ -406,12 +516,31 @@ function App() {
                 <>
                   <form onSubmit={handleSaveAthleteSnapshot}>
                     <h3>Nuovo inserimento dati</h3>
-                    {Object.entries(emptyAthleteForm).map(([field]) => (
+                    {Object.keys(emptyAthleteForm).map((field) => (
                       <label key={field}>
-                        {field}
+                        {athleteFieldLabels[field]}
                         <input type={field === 'recordedAt' ? 'date' : 'number'} step="any" value={athleteForm[field]} onChange={(e) => setAthleteForm({ ...athleteForm, [field]: e.target.value })} required={field === 'recordedAt'} />
                       </label>
                     ))}
+
+                    <h4>Zone allenamento (calcolate automaticamente, modificabili)</h4>
+                    <div className="table-wrap">
+                      <table>
+                        <thead><tr><th>Zona</th><th>FC min</th><th>FC max</th><th>W min</th><th>W max</th></tr></thead>
+                        <tbody>
+                          {autoZonesPreview.map((zone) => (
+                            <tr key={zone.zone}>
+                              <td>{zone.zone}</td>
+                              <td><input type="number" step="1" value={zoneForm[zone.zone].hr.min} onChange={(e) => setZoneForm({ ...zoneForm, [zone.zone]: { ...zoneForm[zone.zone], hr: { ...zoneForm[zone.zone].hr, min: e.target.value } } })} disabled={!zone.hr} /></td>
+                              <td><input type="number" step="1" value={zoneForm[zone.zone].hr.max} onChange={(e) => setZoneForm({ ...zoneForm, [zone.zone]: { ...zoneForm[zone.zone], hr: { ...zoneForm[zone.zone].hr, max: e.target.value } } })} disabled={!zone.hr || zone.hr.max === null} placeholder={zone.hr?.max === null ? '+' : ''} /></td>
+                              <td><input type="number" step="1" value={zoneForm[zone.zone].power.min} onChange={(e) => setZoneForm({ ...zoneForm, [zone.zone]: { ...zoneForm[zone.zone], power: { ...zoneForm[zone.zone].power, min: e.target.value } } })} disabled={!zone.power} /></td>
+                              <td><input type="number" step="1" value={zoneForm[zone.zone].power.max} onChange={(e) => setZoneForm({ ...zoneForm, [zone.zone]: { ...zoneForm[zone.zone], power: { ...zoneForm[zone.zone].power, max: e.target.value } } })} disabled={!zone.power || zone.power.max === null} placeholder={zone.power?.max === null ? '+' : ''} /></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
                     <button type="submit">Salva snapshot</button>
                   </form>
 
