@@ -69,4 +69,16 @@ db.exec(`
 
 db.exec('CREATE INDEX IF NOT EXISTS athlete_profiles_user_idx ON athlete_profiles(user_id, recorded_at DESC, id DESC);');
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS coach_athlete_views (
+    coach_id INTEGER NOT NULL,
+    athlete_id INTEGER NOT NULL,
+    last_seen_profile_id INTEGER,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (coach_id, athlete_id),
+    FOREIGN KEY (coach_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (athlete_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+`);
+
 export default db;
