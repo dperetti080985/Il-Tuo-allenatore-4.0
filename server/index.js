@@ -812,6 +812,70 @@ app.post('/api/training-objective-details', auth, (req, res) => {
   }
 });
 
+app.put('/api/training-objective-details/:id', auth, (req, res) => {
+  if (!isCoach(req.user)) {
+    return res.status(403).json({ message: 'Solo i coach possono modificare obiettivi' });
+  }
+
+  const objectiveId = Number(req.params.id);
+  const existing = db.prepare('SELECT id FROM training_objective_details WHERE id = ?').get(objectiveId);
+  if (!existing) return res.status(404).json({ message: 'Dettaglio obiettivo non trovato' });
+
+  const name = req.body?.name?.trim();
+  const macroArea = req.body?.macroArea?.trim().toLowerCase();
+  if (!name || !macroArea) {
+    return res.status(400).json({ message: 'name e macroArea sono obbligatori' });
+  }
+  if (!TRAINING_MACRO_AREAS.has(macroArea)) {
+    return res.status(400).json({ message: 'Macro area non valida' });
+  }
+
+  try {
+    db.prepare('UPDATE training_objective_details SET name = ?, macro_area = ? WHERE id = ?').run(name, macroArea, objectiveId);
+    const updated = db.prepare('SELECT id, name, macro_area AS macroArea, created_at AS createdAt FROM training_objective_details WHERE id = ?').get(objectiveId);
+    return res.json(updated);
+  } catch {
+    return res.status(409).json({ message: 'Dettaglio obiettivo già esistente' });
+  }
+});
+
+app.post('/api/training-objective-details/:id/duplicate', auth, (req, res) => {
+  if (!isCoach(req.user)) {
+    return res.status(403).json({ message: 'Solo i coach possono duplicare obiettivi' });
+  }
+
+  const objectiveId = Number(req.params.id);
+  const existing = db.prepare('SELECT id, name, macro_area AS macroArea FROM training_objective_details WHERE id = ?').get(objectiveId);
+  if (!existing) return res.status(404).json({ message: 'Dettaglio obiettivo non trovato' });
+
+  let candidateName = `${existing.name} (copia)`;
+  let suffix = 2;
+  while (db.prepare('SELECT id FROM training_objective_details WHERE name = ? AND macro_area = ?').get(candidateName, existing.macroArea)) {
+    candidateName = `${existing.name} (copia ${suffix})`;
+    suffix += 1;
+  }
+
+  const info = db.prepare('INSERT INTO training_objective_details (name, macro_area) VALUES (?, ?)').run(candidateName, existing.macroArea);
+  const duplicated = db.prepare('SELECT id, name, macro_area AS macroArea, created_at AS createdAt FROM training_objective_details WHERE id = ?').get(info.lastInsertRowid);
+  return res.status(201).json(duplicated);
+});
+
+app.delete('/api/training-objective-details/:id', auth, (req, res) => {
+  if (!isCoach(req.user)) {
+    return res.status(403).json({ message: 'Solo i coach possono eliminare obiettivi' });
+  }
+
+  const objectiveId = Number(req.params.id);
+  const linked = db.prepare('SELECT id FROM training_method_objective_details WHERE objective_detail_id = ? LIMIT 1').get(objectiveId);
+  if (linked) {
+    return res.status(409).json({ message: 'Impossibile eliminare: dettaglio obiettivo già associato a metodi esistenti' });
+  }
+
+  const info = db.prepare('DELETE FROM training_objective_details WHERE id = ?').run(objectiveId);
+  if (info.changes === 0) return res.status(404).json({ message: 'Dettaglio obiettivo non trovato' });
+  return res.json({ ok: true });
+});
+
 
 app.get('/api/training-categories', auth, (req, res) => {
   if (!isCoach(req.user)) {
@@ -841,6 +905,66 @@ app.post('/api/training-categories', auth, (req, res) => {
   } catch {
     return res.status(409).json({ message: 'Categoria già esistente' });
   }
+});
+
+app.put('/api/training-categories/:id', auth, (req, res) => {
+  if (!isCoach(req.user)) {
+    return res.status(403).json({ message: 'Solo i coach possono modificare categorie' });
+  }
+
+  const categoryId = Number(req.params.id);
+  const existing = db.prepare('SELECT id FROM training_categories WHERE id = ?').get(categoryId);
+  if (!existing) return res.status(404).json({ message: 'Categoria non trovata' });
+
+  const name = req.body?.name?.trim();
+  if (!name) {
+    return res.status(400).json({ message: 'name è obbligatorio' });
+  }
+
+  try {
+    db.prepare('UPDATE training_categories SET name = ? WHERE id = ?').run(name, categoryId);
+    const updated = db.prepare('SELECT id, name, created_at AS createdAt FROM training_categories WHERE id = ?').get(categoryId);
+    return res.json(updated);
+  } catch {
+    return res.status(409).json({ message: 'Categoria già esistente' });
+  }
+});
+
+app.post('/api/training-categories/:id/duplicate', auth, (req, res) => {
+  if (!isCoach(req.user)) {
+    return res.status(403).json({ message: 'Solo i coach possono duplicare categorie' });
+  }
+
+  const categoryId = Number(req.params.id);
+  const existing = db.prepare('SELECT id, name FROM training_categories WHERE id = ?').get(categoryId);
+  if (!existing) return res.status(404).json({ message: 'Categoria non trovata' });
+
+  let candidateName = `${existing.name} (copia)`;
+  let suffix = 2;
+  while (db.prepare('SELECT id FROM training_categories WHERE name = ?').get(candidateName)) {
+    candidateName = `${existing.name} (copia ${suffix})`;
+    suffix += 1;
+  }
+
+  const info = db.prepare('INSERT INTO training_categories (name) VALUES (?)').run(candidateName);
+  const duplicated = db.prepare('SELECT id, name, created_at AS createdAt FROM training_categories WHERE id = ?').get(info.lastInsertRowid);
+  return res.status(201).json(duplicated);
+});
+
+app.delete('/api/training-categories/:id', auth, (req, res) => {
+  if (!isCoach(req.user)) {
+    return res.status(403).json({ message: 'Solo i coach possono eliminare categorie' });
+  }
+
+  const categoryId = Number(req.params.id);
+  const linked = db.prepare('SELECT id FROM training_method_categories WHERE category_id = ? LIMIT 1').get(categoryId);
+  if (linked) {
+    return res.status(409).json({ message: 'Impossibile eliminare: categoria già associata a metodi esistenti' });
+  }
+
+  const info = db.prepare('DELETE FROM training_categories WHERE id = ?').run(categoryId);
+  if (info.changes === 0) return res.status(404).json({ message: 'Categoria non trovata' });
+  return res.json({ ok: true });
 });
 
 app.get('/api/training-methods', auth, (req, res) => {
