@@ -19,8 +19,14 @@ const emptyUserForm = {
   userType: 'athlete'
 };
 
+const emptyAthleteProfileMeta = {
+  metabolicProfile: '',
+  performanceProfile: ''
+};
+
 const emptyAthleteForm = {
   recordedAt: new Date().toISOString().slice(0, 10),
+  thresholdPowerToWeight: '',
   heightCm: '',
   weightKg: '',
   restingHr: '',
@@ -47,6 +53,7 @@ const athleteFieldLabels = {
   maxHr: 'FC max',
   thresholdHr: 'FC soglia',
   thresholdPowerW: 'Potenza soglia (W)',
+  thresholdPowerToWeight: 'Watt/kg soglia',
   maxPowerW: 'Potenza max (W)',
   cp2MinW: 'CP 2 min (W)',
   cp5MinW: 'CP 5 min (W)',
@@ -112,6 +119,19 @@ const zoneRules = [
   { zone: 'Z5', min: 106, max: 120 },
   { zone: 'Z6', min: 121, max: 150 },
   { zone: 'Z7', min: 151, max: null }
+];
+
+const metabolicProfiles = [
+  { value: 'aerobico', label: 'Aerobico' },
+  { value: 'glucolitico', label: 'Glucolitico' },
+  { value: 'misto', label: 'Misto' }
+];
+
+const performanceProfiles = [
+  { value: 'passista', label: 'Passista' },
+  { value: 'scalatore', label: 'Scalatore' },
+  { value: 'velocista', label: 'Velocista' },
+  { value: 'all-rounder', label: 'All-rounder' }
 ];
 
 const zoneStressWeights = { Z1: 1, Z2: 2, Z3: 3, Z4: 5, Z5: 7, Z6: 9, Z7: 11 };
@@ -253,6 +273,8 @@ function App() {
   const [editingDisciplineId, setEditingDisciplineId] = useState(null);
   const [athleteCategoryIds, setAthleteCategoryIds] = useState([]);
   const [athleteDisciplineIds, setAthleteDisciplineIds] = useState([]);
+  const [athleteProfileMeta, setAthleteProfileMeta] = useState(emptyAthleteProfileMeta);
+  const [coachZoneConfig, setCoachZoneConfig] = useState(zoneRules);
   const [autoZonesPreview, setAutoZonesPreview] = useState(computeAutoZones(null, null));
 
   const isEditing = useMemo(() => editingUserId !== null, [editingUserId]);
@@ -279,15 +301,22 @@ function App() {
 
   const loadAthleteHistory = async (id = athleteId, authToken = token) => {
     if (!id) return;
-    const [data, taxonomy] = await Promise.all([
+    const [data, taxonomy, profileMeta, zoneConfig] = await Promise.all([
       api(`/api/athletes/${id}/profile-history`, {
         headers: { Authorization: `Bearer ${authToken}` }
       }),
-      api(`/api/athletes/${id}/taxonomy`, { headers: { Authorization: `Bearer ${authToken}` } })
+      api(`/api/athletes/${id}/taxonomy`, { headers: { Authorization: `Bearer ${authToken}` } }),
+      api(`/api/athletes/${id}/profile-meta`, { headers: { Authorization: `Bearer ${authToken}` } }),
+      api(`/api/coaches/zone-config`, { headers: { Authorization: `Bearer ${authToken}` } })
     ]);
     setAthleteHistory(data);
     setAthleteCategoryIds(taxonomy.categoryIds || []);
     setAthleteDisciplineIds(taxonomy.disciplineIds || []);
+    setAthleteProfileMeta({
+      metabolicProfile: profileMeta.metabolicProfile || '',
+      performanceProfile: profileMeta.performanceProfile || ''
+    });
+    setCoachZoneConfig(zoneConfig.zones || zoneRules);
 
     if (data.length > 0) {
       const latest = data[0];
@@ -300,6 +329,7 @@ function App() {
         maxHr: latest.maxHr ?? '',
         thresholdHr: latest.thresholdHr ?? '',
         thresholdPowerW: latest.thresholdPowerW ?? '',
+        thresholdPowerToWeight: latest.powerToWeight ?? '',
         maxPowerW: latest.maxPowerW ?? '',
         cp2MinW: latest.cp2MinW ?? '',
         cp5MinW: latest.cp5MinW ?? '',
@@ -546,6 +576,35 @@ function App() {
     }
   };
 
+
+  const saveAthleteProfileMeta = async () => {
+    if (!athleteId || !isCoachUser) return;
+    try {
+      await api(`/api/athletes/${athleteId}/profile-meta`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(athleteProfileMeta)
+      });
+      setMessage('Profilo atleta aggiornato');
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const saveCoachZoneConfig = async () => {
+    if (!isCoachUser) return;
+    try {
+      await api('/api/coaches/zone-config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ zones: coachZoneConfig })
+      });
+      setMessage('Percentuali zone coach aggiornate');
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
   const handleCreateTrainingMethod = async (e) => {
     e.preventDefault();
     setMessage('');
@@ -642,7 +701,7 @@ function App() {
   }, [mode, token, athleteId]);
 
   useEffect(() => {
-    if (token && isCoachUser && ['training-methods', 'training-objective-details', 'training-categories', 'athlete-categories', 'disciplines'].includes(mode)) {
+    if (token && isCoachUser && ['training-methods', 'training-objective-details', 'training-categories', 'athlete-categories', 'disciplines', 'general-master-data', 'coach-zone-config'].includes(mode)) {
       loadTrainingCatalog().catch((err) => setMessage(err.message));
     }
   }, [mode, token, isCoachUser]);
@@ -792,6 +851,7 @@ function App() {
       maxHr: item.maxHr ?? '',
       thresholdHr: item.thresholdHr ?? '',
       thresholdPowerW: item.thresholdPowerW ?? '',
+      thresholdPowerToWeight: item.powerToWeight ?? '',
       maxPowerW: item.maxPowerW ?? '',
       cp2MinW: item.cp2MinW ?? '',
       cp5MinW: item.cp5MinW ?? '',
@@ -827,12 +887,33 @@ function App() {
 
 
   const handleAutoCalculateZones = () => {
-    const calculated = computeAutoZones(
-      toNullableNumber(athleteForm.thresholdHr),
-      toNullableNumber(athleteForm.thresholdPowerW),
-      toNullableNumber(athleteForm.maxHr),
-      toNullableNumber(athleteForm.restingHr)
-    );
+    const normalizedRules = (coachZoneConfig || zoneRules).map((rule) => ({
+      zone: rule.zone,
+      min: Number(rule.min),
+      max: rule.max === null ? null : Number(rule.max)
+    }));
+
+    const thresholdHr = toNullableNumber(athleteForm.thresholdHr);
+    const thresholdPowerW = toNullableNumber(athleteForm.thresholdPowerW);
+    const maxHr = toNullableNumber(athleteForm.maxHr);
+    const restingHr = toNullableNumber(athleteForm.restingHr);
+
+    const thresholdMaxByZone = Object.fromEntries(normalizedRules.map((rule) => [rule.zone, rule.max === null ? null : toRounded((thresholdHr * rule.max) / 100)]));
+    const hrZones = thresholdHr ? normalizedRules.map((rule, index) => {
+      const prevRule = normalizedRules[index - 1];
+      const prevMax = prevRule ? thresholdMaxByZone[prevRule.zone] : null;
+      const fallbackMin = toRounded((thresholdHr * rule.min) / 100);
+      const min = index === 0 ? (restingHr ? restingHr + 10 : fallbackMin) : (prevMax !== null ? prevMax + 1 : fallbackMin);
+      const rawMax = rule.max === null ? (maxHr ?? null) : thresholdMaxByZone[rule.zone];
+      return { min: rawMax !== null && min > rawMax ? rawMax : min, max: rawMax };
+    }) : null;
+
+    const calculated = normalizedRules.map((rule, index) => ({
+      zone: rule.zone,
+      hr: hrZones ? hrZones[index] : null,
+      power: thresholdPowerW ? { min: toRounded((thresholdPowerW * rule.min) / 100), max: rule.max === null ? null : toRounded((thresholdPowerW * rule.max) / 100) } : null
+    }));
+
     setAutoZonesPreview(calculated);
     setZoneForm(formatZoneFormFromZones(calculated));
   };
@@ -883,6 +964,30 @@ function App() {
     return total + setStress * series;
   }, 0), [trainingMethodForm.sets]);
 
+
+  const handleAthleteFieldChange = (field, value) => {
+    setAthleteForm((prev) => {
+      const next = { ...prev, [field]: value };
+      if (field === 'weightKg' && prev.thresholdPowerW && value) {
+        const ratio = Number(prev.thresholdPowerW) / Number(value);
+        next.thresholdPowerToWeight = Number.isFinite(ratio) ? ratio.toFixed(2) : '';
+      }
+      if (field === 'thresholdPowerW' && prev.weightKg && value) {
+        const ratio = Number(value) / Number(prev.weightKg);
+        next.thresholdPowerToWeight = Number.isFinite(ratio) ? ratio.toFixed(2) : '';
+      }
+      return next;
+    });
+  };
+
+  const handlePowerToWeightChange = (value) => {
+    setAthleteForm((prev) => {
+      if (!prev.weightKg || !value) return { ...prev, thresholdPowerToWeight: value };
+      const thresholdPowerW = (Number(value) * Number(prev.weightKg)).toFixed(0);
+      return { ...prev, thresholdPowerToWeight: value, thresholdPowerW };
+    });
+  };
+
   const deleteUser = async (id) => {
     try {
       await api(`/api/users/${id}`, {
@@ -926,10 +1031,6 @@ function App() {
   };
 
   const usersTitle = isCoachUser ? 'Gestione utenti' : 'Gestione profilo';
-  const currentPowerToWeight = toNullableNumber(athleteForm.thresholdPowerW) && toNullableNumber(athleteForm.weightKg)
-    ? (toNullableNumber(athleteForm.thresholdPowerW) / toNullableNumber(athleteForm.weightKg)).toFixed(2)
-    : '';
-
   if (status.loading) return <main className="container">Caricamento...</main>;
 
   return (
@@ -979,10 +1080,7 @@ function App() {
               <button onClick={() => setMode(isCoachUser ? 'users-list' : 'profile')}>{isCoachUser ? 'Gestione utenti' : 'Gestione mio utente'}</button>
               {!isCoachUser && <button onClick={() => setMode('athlete-profile')}>Profilo atleta</button>}
               {isCoachUser && <button onClick={() => setMode('training-methods')}>Metodi allenamento</button>}
-              {isCoachUser && <button onClick={() => setMode('training-objective-details')}>Dettagli obiettivi</button>}
-              {isCoachUser && <button onClick={() => setMode('training-categories')}>Categorie metodi</button>}
-              {isCoachUser && <button onClick={() => setMode('athlete-categories')}>Categorie atleti</button>}
-              {isCoachUser && <button onClick={() => setMode('disciplines')}>Discipline</button>}
+              {isCoachUser && <button onClick={() => setMode('general-master-data')}>Anagrafiche campi generali</button>}
             </div>
           </section>
 
@@ -1171,11 +1269,50 @@ function App() {
             </section>
           )}
 
+
+          {mode === 'general-master-data' && isCoachUser && (
+            <section className="card">
+              <h2>Anagrafiche campi generali</h2>
+              <div className="actions">
+                <button type="button" onClick={() => setMode('training-objective-details')}>Dettagli obiettivi</button>
+                <button type="button" onClick={() => setMode('training-categories')}>Categorie metodi</button>
+                <button type="button" onClick={() => setMode('athlete-categories')}>Categorie atleti</button>
+                <button type="button" onClick={() => setMode('disciplines')}>Discipline</button>
+                <button type="button" onClick={() => setMode('coach-zone-config')}>Zone coach (percentuali)</button>
+              </div>
+            </section>
+          )}
+
+          {mode === 'coach-zone-config' && isCoachUser && (
+            <section className="card">
+              <div className="row">
+                <h2>Configurazione zone coach</h2>
+                <button type="button" className="secondary" onClick={() => setMode('general-master-data')}>Torna anagrafiche</button>
+              </div>
+              <p>Percentuali usate per il calcolo automatico FC e Watt delle zone.</p>
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>Zona</th><th>% Min</th><th>% Max</th></tr></thead>
+                  <tbody>
+                    {coachZoneConfig.map((zone, index) => (
+                      <tr key={`cfg-${zone.zone}`}>
+                        <td>{zone.zone}</td>
+                        <td><input type="number" value={zone.min} onChange={(e) => setCoachZoneConfig((prev) => prev.map((z, i) => i === index ? { ...z, min: e.target.value } : z))} /></td>
+                        <td><input type="number" value={zone.max ?? ''} placeholder="+" onChange={(e) => setCoachZoneConfig((prev) => prev.map((z, i) => i === index ? { ...z, max: e.target.value === '' ? null : e.target.value } : z))} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <button type="button" onClick={saveCoachZoneConfig}>Salva percentuali zone coach</button>
+            </section>
+          )}
+
           {mode === 'training-objective-details' && isCoachUser && (
             <section className="card">
               <div className="row">
                 <h2>Dettagli obiettivi</h2>
-                <button type="button" className="secondary" onClick={() => setMode('training-methods')}>Torna ai metodi</button>
+                <button type="button" className="secondary" onClick={() => setMode('general-master-data')}>Torna alle anagrafiche</button>
               </div>
               <form onSubmit={handleSaveObjectiveDetail} className="subcard">
                 <h3>{editingObjectiveId ? `Modifica dettaglio #${editingObjectiveId}` : 'Nuovo dettaglio obiettivo'}</h3>
@@ -1219,7 +1356,7 @@ function App() {
             <section className="card">
               <div className="row">
                 <h2>Categorie metodi</h2>
-                <button type="button" className="secondary" onClick={() => setMode('training-methods')}>Torna ai metodi</button>
+                <button type="button" className="secondary" onClick={() => setMode('general-master-data')}>Torna alle anagrafiche</button>
               </div>
               <form onSubmit={handleSaveCategory} className="subcard">
                 <h3>{editingCategoryId ? `Modifica categoria #${editingCategoryId}` : 'Nuova categoria metodo'}</h3>
@@ -1257,7 +1394,7 @@ function App() {
             <section className="card">
               <div className="row">
                 <h2>Categorie atleta</h2>
-                <button type="button" className="secondary" onClick={() => setMode('training-methods')}>Torna ai metodi</button>
+                <button type="button" className="secondary" onClick={() => setMode('general-master-data')}>Torna alle anagrafiche</button>
               </div>
               <form onSubmit={handleSaveAthleteCategory} className="subcard">
                 <h3>{editingAthleteCategoryId ? `Modifica categoria atleta #${editingAthleteCategoryId}` : 'Nuova categoria atleta'}</h3>
@@ -1288,7 +1425,7 @@ function App() {
             <section className="card">
               <div className="row">
                 <h2>Discipline</h2>
-                <button type="button" className="secondary" onClick={() => setMode('training-methods')}>Torna ai metodi</button>
+                <button type="button" className="secondary" onClick={() => setMode('general-master-data')}>Torna alle anagrafiche</button>
               </div>
               <form onSubmit={handleSaveDiscipline} className="subcard">
                 <h3>{editingDisciplineId ? `Modifica disciplina #${editingDisciplineId}` : 'Nuova disciplina'}</h3>
@@ -1325,35 +1462,44 @@ function App() {
               {!athleteId ? <p>Seleziona un atleta dalla lista utenti.</p> : (
                 <>
                   <form onSubmit={handleSaveAthleteSnapshot}>
-                    <h3>Nuovo inserimento dati</h3>
+                    <h3>Snapshot fisiologico</h3>
                     {isCoachUser && (
                       <div className="split-panels">
+                        <div className="subcard">
+                          <h4>Profilo atleta (anagrafica)</h4>
+                          <label>Profilo metabolico
+                            <select value={athleteProfileMeta.metabolicProfile} onChange={(e) => setAthleteProfileMeta((prev) => ({ ...prev, metabolicProfile: e.target.value }))}>
+                              <option value="">-</option>
+                              {metabolicProfiles.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                            </select>
+                          </label>
+                          <label>Profilo prestativo
+                            <select value={athleteProfileMeta.performanceProfile} onChange={(e) => setAthleteProfileMeta((prev) => ({ ...prev, performanceProfile: e.target.value }))}>
+                              <option value="">-</option>
+                              {performanceProfiles.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                            </select>
+                          </label>
+                          <button type="button" onClick={saveAthleteProfileMeta}>Salva profilo atleta</button>
+                        </div>
                         <div className="subcard">
                           <h4>Categorie atleta</h4>
                           {athleteCategories.map((category) => (
                             <label key={`ath-cat-${category.id}`}><input type="checkbox" checked={athleteCategoryIds.includes(category.id)} onChange={() => setAthleteCategoryIds((prev) => prev.includes(category.id) ? prev.filter((id) => id !== category.id) : [...prev, category.id])} /> {category.name}</label>
                           ))}
-                        </div>
-                        <div className="subcard">
                           <h4>Discipline atleta</h4>
                           {disciplines.map((discipline) => (
                             <label key={`ath-disc-${discipline.id}`}><input type="checkbox" checked={athleteDisciplineIds.includes(discipline.id)} onChange={() => setAthleteDisciplineIds((prev) => prev.includes(discipline.id) ? prev.filter((id) => id !== discipline.id) : [...prev, discipline.id])} /> {discipline.name}</label>
                           ))}
+                          <button type="button" onClick={saveAthleteTaxonomy}>Salva categorie/discipline atleta</button>
                         </div>
-                        <button type="button" onClick={saveAthleteTaxonomy}>Salva categorie/discipline atleta</button>
                       </div>
                     )}
                     {Object.keys(emptyAthleteForm).map((field) => (
                       <label key={field}>
                         {athleteFieldLabels[field]}
-                        <input type={field === 'recordedAt' ? 'date' : 'number'} step="any" value={athleteForm[field]} onChange={(e) => setAthleteForm({ ...athleteForm, [field]: e.target.value })} required={field === 'recordedAt'} />
+                        <input type={field === 'recordedAt' ? 'date' : 'number'} step="any" value={athleteForm[field]} onChange={(e) => field === 'thresholdPowerToWeight' ? handlePowerToWeightChange(e.target.value) : handleAthleteFieldChange(field, e.target.value)} required={field === 'recordedAt'} />
                       </label>
                     ))}
-
-                    <label>
-                      Watt/kg (calcolato in automatico da peso e potenza soglia)
-                      <input type="number" step="0.01" value={currentPowerToWeight} readOnly />
-                    </label>
 
                     <h4>Zone allenamento (premi il pulsante per il calcolo automatico)</h4>
                     <button type="button" onClick={handleAutoCalculateZones}>Calcola zone automatiche</button>
@@ -1385,10 +1531,10 @@ function App() {
                   <TrainingChart history={athleteHistory} metricKey="thresholdPowerW" title="Andamento potenza soglia" color="#ef4444" />
                   <div className="table-wrap">
                     <table>
-                      <thead><tr><th>Data</th><th>Altezza</th><th>Peso</th><th>FC riposo</th><th>FC Soglia</th><th>Potenza Soglia</th><th>W/kg</th><th>VO2 max</th><th>Potenza VO2 max</th><th>FC VO2 max</th><th>Zone</th><th>Azioni</th></tr></thead>
+                      <thead><tr><th>Data</th><th>Peso</th><th>FC riposo</th><th>FC soglia</th><th>Potenza soglia</th><th>W/kg</th><th>Zone (FC / Watt)</th><th>Azioni</th></tr></thead>
                       <tbody>
                         {athleteHistory.map((item) => (
-                          <tr key={item.id}><td>{item.recordedAt}</td><td>{item.heightCm ?? '-'}</td><td>{item.weightKg ?? '-'}</td><td>{item.restingHr ?? '-'}</td><td>{item.thresholdHr ?? '-'}</td><td>{item.thresholdPowerW ?? '-'}</td><td>{item.powerToWeight ?? '-'}</td><td>{item.vo2Max ?? '-'}</td><td>{item.vo2MaxPowerW ?? '-'}</td><td>{item.vo2MaxHr ?? '-'}</td><td>{item.zones.map((zone) => <div key={zone.zone}>{zone.zone}: FC {zone.hr ? `${zone.hr.min}-${zone.hr.max ?? '+'}` : '-'} | W {zone.power ? `${zone.power.min}-${zone.power.max ?? '+'}` : '-'}</div>)}</td><td><div className="actions"><button type="button" onClick={() => startSnapshotEditing(item)}>Modifica</button><button type="button" className="danger" onClick={() => deleteSnapshot(item.id)}>Elimina</button></div></td></tr>
+                          <tr key={item.id}><td>{item.recordedAt}</td><td>{item.weightKg ?? '-'}</td><td>{item.restingHr ?? '-'}</td><td>{item.thresholdHr ?? '-'}</td><td>{item.thresholdPowerW ?? '-'}</td><td>{item.powerToWeight ?? '-'}</td><td><div className="zones-grid">{item.zones.map((zone) => <div key={zone.zone}><strong>{zone.zone}</strong><span>FC {zone.hr ? `${zone.hr.min}-${zone.hr.max ?? '+'}` : '-'}</span><span>W {zone.power ? `${zone.power.min}-${zone.power.max ?? '+'}` : '-'}</span></div>)}</div></td><td><div className="actions"><button type="button" onClick={() => startSnapshotEditing(item)}>Modifica</button><button type="button" className="danger" onClick={() => deleteSnapshot(item.id)}>Elimina</button></div></td></tr>
                         ))}
                       </tbody>
                     </table>

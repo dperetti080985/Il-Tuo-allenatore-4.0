@@ -7,6 +7,8 @@ const app = express();
 const PORT = 3001;
 const JWT_SECRET = 'local-dev-secret-change-me';
 const USER_TYPES = new Set(['coach', 'athlete']);
+const ATHLETE_METABOLIC_PROFILES = new Set(['aerobico', 'glucolitico', 'misto']);
+const ATHLETE_PERFORMANCE_PROFILES = new Set(['passista', 'scalatore', 'velocista', 'all-rounder']);
 
 const TRAINING_MACRO_AREAS = new Set(['metabolico', 'neuromuscolare']);
 const TRAINING_PERIODS = new Set(['costruzione', 'specialistico', 'pre-gara', 'gara']);
@@ -38,7 +40,9 @@ const normalizeUserPayload = (payload) => ({
   lastName: payload.lastName?.trim(),
   email: payload.email?.trim().toLowerCase() || null,
   phone: payload.phone?.trim(),
-  userType: payload.userType?.trim().toLowerCase()
+  userType: payload.userType?.trim().toLowerCase(),
+  athleteMetabolicProfile: payload.athleteMetabolicProfile?.trim().toLowerCase() || null,
+  athletePerformanceProfile: payload.athletePerformanceProfile?.trim().toLowerCase() || null
 });
 
 const validateRequiredUserFields = (user) => {
@@ -48,6 +52,14 @@ const validateRequiredUserFields = (user) => {
 
   if (!USER_TYPES.has(user.userType)) {
     return 'Tipologia utente non valida';
+  }
+
+  if (user.athleteMetabolicProfile && !ATHLETE_METABOLIC_PROFILES.has(user.athleteMetabolicProfile)) {
+    return 'Profilo metabolico atleta non valido';
+  }
+
+  if (user.athletePerformanceProfile && !ATHLETE_PERFORMANCE_PROFILES.has(user.athletePerformanceProfile)) {
+    return 'Profilo prestativo atleta non valido';
   }
 
   return null;
@@ -95,15 +107,37 @@ const ZONE_RULES = [
 
 const toRounded = (value) => Math.round(value);
 
-const computeHeartRateZones = (thresholdHr, maxHr, restingHr) => {
+const loadCoachZoneRules = (coachId) => {
+  if (!coachId) return ZONE_RULES;
+
+  const rows = db.prepare('SELECT metric, zone, min_pct AS minPct, max_pct AS maxPct FROM coach_zone_configs WHERE coach_id = ?').all(coachId);
+  if (rows.length === 0) return ZONE_RULES;
+
+  const hrRowsByZone = new Map(rows.filter((row) => row.metric === 'hr').map((row) => [row.zone, row]));
+  const powerRowsByZone = new Map(rows.filter((row) => row.metric === 'power').map((row) => [row.zone, row]));
+
+  return ZONE_RULES.map((rule) => {
+    const hr = hrRowsByZone.get(rule.zone);
+    const power = powerRowsByZone.get(rule.zone);
+    const source = hr || power;
+    return {
+      zone: rule.zone,
+      min: source ? Number(source.minPct) : rule.min,
+      max: source ? (source.maxPct === null ? null : Number(source.maxPct)) : rule.max
+    };
+  });
+};
+
+
+const computeHeartRateZones = (thresholdHr, maxHr, restingHr, rules = ZONE_RULES) => {
   if (!thresholdHr) return null;
 
   const thresholdMaxByZone = Object.fromEntries(
-    ZONE_RULES.map((rule) => [rule.zone, rule.max === null ? null : toRounded((thresholdHr * rule.max) / 100)])
+    rules.map((rule) => [rule.zone, rule.max === null ? null : toRounded((thresholdHr * rule.max) / 100)])
   );
 
-  return ZONE_RULES.map((rule, index) => {
-    const previousRule = ZONE_RULES[index - 1];
+  return rules.map((rule, index) => {
+    const previousRule = rules[index - 1];
     const previousMax = previousRule ? thresholdMaxByZone[previousRule.zone] : null;
     const fallbackMin = toRounded((thresholdHr * rule.min) / 100);
 
@@ -124,10 +158,10 @@ const computeHeartRateZones = (thresholdHr, maxHr, restingHr) => {
   });
 };
 
-const computeZones = (thresholdHr, thresholdPower, maxHr, restingHr) => {
-  const hrZones = computeHeartRateZones(thresholdHr, maxHr, restingHr);
+const computeZones = (thresholdHr, thresholdPower, maxHr, restingHr, rules = ZONE_RULES) => {
+  const hrZones = computeHeartRateZones(thresholdHr, maxHr, restingHr, rules);
 
-  return ZONE_RULES.map((rule, index) => {
+  return rules.map((rule, index) => {
     const hr = hrZones ? hrZones[index] : null;
 
     const power = thresholdPower
@@ -205,9 +239,16 @@ const normalizeZoneOverride = (payload) => {
   return { data: result };
 };
 
-const buildProfileResponse = (row) => {
+const getReferenceCoachId = (requestUser) => {
+  if (isCoach(requestUser)) return requestUser.id;
+  const firstCoach = db.prepare("SELECT id FROM users WHERE user_type = 'coach' ORDER BY id ASC LIMIT 1").get();
+  return firstCoach?.id ?? null;
+};
+
+const buildProfileResponse = (row, coachId = null) => {
   const zoneOverrides = row.zones_override_json ? JSON.parse(row.zones_override_json) : {};
-  const autoZones = computeZones(row.threshold_hr, row.threshold_power_w, row.max_hr, row.resting_hr);
+  const zoneRules = loadCoachZoneRules(coachId);
+  const autoZones = computeZones(row.threshold_hr, row.threshold_power_w, row.max_hr, row.resting_hr, zoneRules);
   const zones = autoZones.map((z) => ({
     ...z,
     hr: zoneOverrides?.[z.zone]?.hr || z.hr,
@@ -442,11 +483,11 @@ app.post('/api/users', (req, res) => {
 
   try {
     const stmt = db.prepare(`
-      INSERT INTO users (username, password, first_name, last_name, email, phone, user_type)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO users (username, password, first_name, last_name, email, phone, user_type, athlete_metabolic_profile, athlete_performance_profile)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    const info = stmt.run(user.username, user.password, user.firstName, user.lastName, user.email, user.phone, user.userType);
+    const info = stmt.run(user.username, user.password, user.firstName, user.lastName, user.email, user.phone, user.userType, user.athleteMetabolicProfile, user.athletePerformanceProfile);
 
     res.status(201).json({
       id: info.lastInsertRowid,
@@ -455,7 +496,9 @@ app.post('/api/users', (req, res) => {
       lastName: user.lastName,
       email: user.email,
       phone: user.phone,
-      userType: user.userType
+      userType: user.userType,
+      athleteMetabolicProfile: user.athleteMetabolicProfile,
+      athletePerformanceProfile: user.athletePerformanceProfile
     });
   } catch {
     res.status(409).json({ message: 'Username o email già esistente' });
@@ -470,7 +513,7 @@ app.post('/api/login', (req, res) => {
   }
 
   const user = db
-    .prepare('SELECT id, username, first_name AS firstName, last_name AS lastName, email, phone, user_type AS userType FROM users WHERE username = ? AND password = ?')
+    .prepare('SELECT id, username, first_name AS firstName, last_name AS lastName, email, phone, user_type AS userType, athlete_metabolic_profile AS athleteMetabolicProfile, athlete_performance_profile AS athletePerformanceProfile FROM users WHERE username = ? AND password = ?')
     .get(username.trim(), password);
 
   if (!user) {
@@ -493,6 +536,8 @@ app.get('/api/users', auth, (req, res) => {
           email,
           phone,
           user_type AS userType,
+          athlete_metabolic_profile AS athleteMetabolicProfile,
+          athlete_performance_profile AS athletePerformanceProfile,
           created_at AS createdAt
         FROM users
         ORDER BY id DESC
@@ -534,7 +579,7 @@ app.get('/api/users', auth, (req, res) => {
 app.put('/api/users/:id', auth, (req, res) => {
   const id = Number(req.params.id);
   const existingUser = db
-    .prepare('SELECT id, username, password, first_name AS firstName, last_name AS lastName, email, phone, user_type AS userType FROM users WHERE id = ?')
+    .prepare('SELECT id, username, password, first_name AS firstName, last_name AS lastName, email, phone, user_type AS userType, athlete_metabolic_profile AS athleteMetabolicProfile, athlete_performance_profile AS athletePerformanceProfile FROM users WHERE id = ?')
     .get(id);
 
   if (!existingUser) {
@@ -561,7 +606,9 @@ app.put('/api/users/:id', auth, (req, res) => {
     lastName: payload.lastName,
     email: payload.email,
     phone: payload.phone,
-    userType: requesterIsCoach ? payload.userType : existingUser.userType
+    userType: requesterIsCoach ? payload.userType : existingUser.userType,
+    athleteMetabolicProfile: payload.athleteMetabolicProfile ?? existingUser.athleteMetabolicProfile,
+    athletePerformanceProfile: payload.athletePerformanceProfile ?? existingUser.athletePerformanceProfile
   };
 
   const validationError = validateRequiredUserFields(updatedUser);
@@ -573,10 +620,10 @@ app.put('/api/users/:id', auth, (req, res) => {
     const info = db
       .prepare(`
         UPDATE users
-        SET username = ?, password = ?, first_name = ?, last_name = ?, email = ?, phone = ?, user_type = ?
+        SET username = ?, password = ?, first_name = ?, last_name = ?, email = ?, phone = ?, user_type = ?, athlete_metabolic_profile = ?, athlete_performance_profile = ?
         WHERE id = ?
       `)
-      .run(updatedUser.username, updatedUser.password, updatedUser.firstName, updatedUser.lastName, updatedUser.email, updatedUser.phone, updatedUser.userType, id);
+      .run(updatedUser.username, updatedUser.password, updatedUser.firstName, updatedUser.lastName, updatedUser.email, updatedUser.phone, updatedUser.userType, updatedUser.athleteMetabolicProfile, updatedUser.athletePerformanceProfile, id);
 
     if (info.changes === 0) {
       return res.status(404).json({ message: 'Utente non trovato' });
@@ -607,7 +654,7 @@ app.get('/api/athletes/:id/profile-history', auth, (req, res) => {
   const history = db
     .prepare('SELECT * FROM athlete_profiles WHERE user_id = ? ORDER BY recorded_at DESC, id DESC')
     .all(athleteId)
-    .map(buildProfileResponse);
+    .map((row) => buildProfileResponse(row, getReferenceCoachId(req.user)));
 
   return res.json(history);
 });
@@ -704,7 +751,7 @@ app.post('/api/athletes/:id/profile-history', auth, (req, res) => {
     );
 
   const created = db.prepare('SELECT * FROM athlete_profiles WHERE id = ?').get(info.lastInsertRowid);
-  return res.status(201).json(buildProfileResponse(created));
+  return res.status(201).json(buildProfileResponse(created, getReferenceCoachId(req.user)));
 });
 
 
@@ -806,7 +853,7 @@ app.put('/api/athletes/:id/profile-history/:snapshotId', auth, (req, res) => {
   );
 
   const updated = db.prepare('SELECT * FROM athlete_profiles WHERE id = ?').get(snapshotId);
-  return res.json(buildProfileResponse(updated));
+  return res.json(buildProfileResponse(updated, getReferenceCoachId(req.user)));
 });
 
 app.delete('/api/athletes/:id/profile-history/:snapshotId', auth, (req, res) => {
@@ -1146,6 +1193,68 @@ app.delete('/api/disciplines/:id', auth, (req, res) => {
   const info = db.prepare('DELETE FROM disciplines WHERE id = ?').run(id);
   if (info.changes === 0) return res.status(404).json({ message: 'Disciplina non trovata' });
   return res.json({ ok: true });
+});
+
+
+app.get('/api/athletes/:id/profile-meta', auth, (req, res) => {
+  const athleteId = Number(req.params.id);
+  if (!canAccessAthlete(req.user, athleteId)) return res.status(403).json({ message: 'Non autorizzato' });
+  const athlete = db.prepare(`
+    SELECT id, user_type AS userType, athlete_metabolic_profile AS metabolicProfile, athlete_performance_profile AS performanceProfile
+    FROM users
+    WHERE id = ?
+  `).get(athleteId);
+  if (!athlete) return res.status(404).json({ message: 'Utente non trovato' });
+  if (athlete.userType !== 'athlete') return res.status(400).json({ message: 'Utente non atleta' });
+  return res.json({ metabolicProfile: athlete.metabolicProfile, performanceProfile: athlete.performanceProfile });
+});
+
+app.put('/api/athletes/:id/profile-meta', auth, (req, res) => {
+  const athleteId = Number(req.params.id);
+  if (!isCoach(req.user)) return res.status(403).json({ message: 'Solo i coach possono aggiornare il profilo atleta' });
+  const athlete = db.prepare("SELECT id, user_type AS userType FROM users WHERE id = ?").get(athleteId);
+  if (!athlete) return res.status(404).json({ message: 'Utente non trovato' });
+  if (athlete.userType !== 'athlete') return res.status(400).json({ message: 'Utente non atleta' });
+
+  const metabolicProfile = req.body?.metabolicProfile?.trim().toLowerCase() || null;
+  const performanceProfile = req.body?.performanceProfile?.trim().toLowerCase() || null;
+  if (metabolicProfile && !ATHLETE_METABOLIC_PROFILES.has(metabolicProfile)) return res.status(400).json({ message: 'Profilo metabolico non valido' });
+  if (performanceProfile && !ATHLETE_PERFORMANCE_PROFILES.has(performanceProfile)) return res.status(400).json({ message: 'Profilo prestativo non valido' });
+
+  db.prepare('UPDATE users SET athlete_metabolic_profile = ?, athlete_performance_profile = ? WHERE id = ?').run(metabolicProfile, performanceProfile, athleteId);
+  return res.json({ metabolicProfile, performanceProfile });
+});
+
+app.get('/api/coaches/zone-config', auth, (req, res) => {
+  const coachId = getReferenceCoachId(req.user);
+  return res.json({ zones: loadCoachZoneRules(coachId) });
+});
+
+app.put('/api/coaches/zone-config', auth, (req, res) => {
+  if (!isCoach(req.user)) return res.status(403).json({ message: 'Solo i coach possono aggiornare le zone' });
+
+  const zones = Array.isArray(req.body?.zones) ? req.body.zones : [];
+  if (zones.length !== ZONE_RULES.length) return res.status(400).json({ message: 'Configurazione zone incompleta' });
+
+  const normalized = zones.map((zone) => ({
+    zone: zone.zone,
+    min: Number(zone.min),
+    max: zone.max === null || zone.max === '' ? null : Number(zone.max)
+  }));
+
+  for (const zone of normalized) {
+    if (!zone.zone || Number.isNaN(zone.min) || (zone.max !== null && Number.isNaN(zone.max))) {
+      return res.status(400).json({ message: `Valori non validi per ${zone.zone || 'zona'}` });
+    }
+  }
+
+  db.prepare('DELETE FROM coach_zone_configs WHERE coach_id = ?').run(req.user.id);
+  normalized.forEach((zone) => {
+    db.prepare('INSERT INTO coach_zone_configs (coach_id, metric, zone, min_pct, max_pct) VALUES (?, ?, ?, ?, ?)').run(req.user.id, 'hr', zone.zone, zone.min, zone.max);
+    db.prepare('INSERT INTO coach_zone_configs (coach_id, metric, zone, min_pct, max_pct) VALUES (?, ?, ?, ?, ?)').run(req.user.id, 'power', zone.zone, zone.min, zone.max);
+  });
+
+  return res.json({ zones: loadCoachZoneRules(req.user.id) });
 });
 
 app.get('/api/athletes/:id/taxonomy', auth, (req, res) => {
