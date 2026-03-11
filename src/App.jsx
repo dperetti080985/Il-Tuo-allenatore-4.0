@@ -76,6 +76,12 @@ const trainingPeriods = [
   { value: 'gara', label: 'Periodo gara' }
 ];
 
+const trainingModes = [
+  { value: 'in_bici', label: 'In bici' },
+  { value: 'in_palestra', label: 'In palestra' },
+  { value: 'a_corpo_libero', label: 'A corpo libero' }
+];
+
 const trainingMethodTypes = [
   { value: 'single', label: 'Singolo allenamento' },
   { value: 'monthly_weekly', label: 'Progressione mensile (1 volta/settimana)' },
@@ -86,7 +92,7 @@ const emptyMethodSet = {
   seriesCount: 4,
   recoveryMinutes: 4,
   recoverySeconds: 0,
-  intervals: [{ minutes: 1, seconds: 0, intensityZone: 'Z3', rpm: 90, rpe: '' }]
+  intervals: [{ minutes: 1, seconds: 0, intensityZone: 'Z3', rpm: 90, rpe: '', exerciseId: '', intervalRecoveryMinutes: 0, intervalRecoverySeconds: 0, description: '', overloadPct: '' }]
 };
 
 const emptyTrainingMethodForm = {
@@ -99,6 +105,7 @@ const emptyTrainingMethodForm = {
   period: 'costruzione',
   notes: '',
   methodType: 'single',
+  trainingMode: 'in_bici',
   progressionIncrementPct: 5,
   progression: { baseWeekLoadPct: 100, week2Pct: 105, week3Pct: 110, week4DeloadPct: 95 },
   sets: [emptyMethodSet]
@@ -108,7 +115,14 @@ const cloneSet = (set = emptyMethodSet) => ({
   seriesCount: Number(set.seriesCount ?? emptyMethodSet.seriesCount),
   recoveryMinutes: Number(set.recoveryMinutes ?? emptyMethodSet.recoveryMinutes),
   recoverySeconds: Number(set.recoverySeconds ?? emptyMethodSet.recoverySeconds),
-  intervals: (set.intervals || emptyMethodSet.intervals).map((interval) => ({ ...interval }))
+  intervals: (set.intervals || emptyMethodSet.intervals).map((interval) => ({
+    ...interval,
+    exerciseId: interval.exerciseId ?? '',
+    intervalRecoveryMinutes: Number(interval.intervalRecoveryMinutes ?? 0),
+    intervalRecoverySeconds: Number(interval.intervalRecoverySeconds ?? 0),
+    description: interval.description ?? '',
+    overloadPct: interval.overloadPct ?? ''
+  }))
 });
 
 const zoneRules = [
@@ -267,11 +281,13 @@ function App() {
   const [trainingCategories, setTrainingCategories] = useState([]);
   const [athleteCategories, setAthleteCategories] = useState([]);
   const [disciplines, setDisciplines] = useState([]);
+  const [trainingExercises, setTrainingExercises] = useState([]);
   const [trainingMethods, setTrainingMethods] = useState([]);
   const [objectiveForm, setObjectiveForm] = useState({ name: '', macroArea: 'metabolico' });
   const [categoryForm, setCategoryForm] = useState({ name: '' });
   const [athleteCategoryForm, setAthleteCategoryForm] = useState({ name: '' });
   const [disciplineForm, setDisciplineForm] = useState({ name: '' });
+  const [exerciseForm, setExerciseForm] = useState({ name: '' });
   const [trainingMethodForm, setTrainingMethodForm] = useState(emptyTrainingMethodForm);
   const [editingMethodId, setEditingMethodId] = useState(null);
   const [methodManagementMode, setMethodManagementMode] = useState('list');
@@ -279,6 +295,7 @@ function App() {
   const [editingCategoryId, setEditingCategoryId] = useState(null);
   const [editingAthleteCategoryId, setEditingAthleteCategoryId] = useState(null);
   const [editingDisciplineId, setEditingDisciplineId] = useState(null);
+  const [editingExerciseId, setEditingExerciseId] = useState(null);
   const [athleteCategoryIds, setAthleteCategoryIds] = useState([]);
   const [athleteDisciplineIds, setAthleteDisciplineIds] = useState([]);
   const [athleteProfileMeta, setAthleteProfileMeta] = useState(emptyAthleteProfileMeta);
@@ -359,17 +376,19 @@ function App() {
 
 
   const loadTrainingCatalog = async (authToken = token) => {
-    const [details, categories, athleteCats, disciplineList, methods] = await Promise.all([
+    const [details, categories, athleteCats, disciplineList, exercises, methods] = await Promise.all([
       api('/api/training-objective-details', { headers: { Authorization: `Bearer ${authToken}` } }),
       api('/api/training-categories', { headers: { Authorization: `Bearer ${authToken}` } }),
       api('/api/athlete-categories', { headers: { Authorization: `Bearer ${authToken}` } }),
       api('/api/disciplines', { headers: { Authorization: `Bearer ${authToken}` } }),
+      api('/api/training-exercises', { headers: { Authorization: `Bearer ${authToken}` } }),
       api('/api/training-methods', { headers: { Authorization: `Bearer ${authToken}` } })
     ]);
     setTrainingObjectiveDetails(details);
     setTrainingCategories(categories);
     setAthleteCategories(athleteCats);
     setDisciplines(disciplineList);
+    setTrainingExercises(exercises);
     setTrainingMethods(methods);
   };
 
@@ -574,6 +593,51 @@ function App() {
     }
   };
 
+
+  const handleSaveExercise = async (e) => {
+    e.preventDefault();
+    setMessage('');
+    try {
+      const endpoint = editingExerciseId ? `/api/training-exercises/${editingExerciseId}` : '/api/training-exercises';
+      const method = editingExerciseId ? 'PUT' : 'POST';
+      await api(endpoint, {
+        method,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(exerciseForm)
+      });
+      setEditingExerciseId(null);
+      setExerciseForm({ name: '' });
+      await loadTrainingCatalog();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const startEditingExercise = (exercise) => {
+    setEditingExerciseId(exercise.id);
+    setExerciseForm({ name: exercise.name });
+  };
+
+  const cancelExerciseEditing = () => {
+    setEditingExerciseId(null);
+    setExerciseForm({ name: '' });
+  };
+
+  const deleteExercise = async (id) => {
+    try {
+      await api(`/api/training-exercises/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (editingExerciseId === id) {
+        cancelExerciseEditing();
+      }
+      await loadTrainingCatalog();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
   const saveAthleteTaxonomy = async () => {
     if (!athleteId || !isCoachUser) return;
     try {
@@ -660,9 +724,10 @@ function App() {
       period: method.period,
       notes: method.notes || '',
       methodType: method.methodType,
+      trainingMode: method.trainingMode || 'in_bici',
       progressionIncrementPct: method.progressionIncrementPct ?? 5,
       progression: method.progression || emptyTrainingMethodForm.progression,
-      sets: [cloneSet(firstSet)]
+      sets: [{ ...cloneSet(firstSet), intervals: (firstSet.intervals || []).map((interval) => ({ ...interval, intervalRecoveryMinutes: Math.floor((interval.recoverySeconds || 0) / 60), intervalRecoverySeconds: (interval.recoverySeconds || 0) % 60 })) }]
     });
     setMethodManagementMode('form');
   };
@@ -713,7 +778,7 @@ function App() {
   }, [mode, token, athleteId]);
 
   useEffect(() => {
-    if (token && isCoachUser && ['training-methods', 'training-objective-details', 'training-categories', 'athlete-categories', 'disciplines', 'general-master-data', 'coach-zone-config'].includes(mode)) {
+    if (token && isCoachUser && ['training-methods', 'training-objective-details', 'training-categories', 'athlete-categories', 'disciplines', 'training-exercises', 'general-master-data', 'coach-zone-config'].includes(mode)) {
       loadTrainingCatalog().catch((err) => setMessage(err.message));
     }
   }, [mode, token, isCoachUser]);
@@ -931,6 +996,8 @@ function App() {
     setZoneForm(formatZoneFormFromZones(calculated));
   };
 
+  const selectedNames = (items, ids) => items.filter((item) => ids.includes(item.id)).map((item) => item.name).join(', ');
+
   const toggleMultiValue = (field, value) => {
     setTrainingMethodForm((prev) => {
       const has = prev[field].includes(value);
@@ -956,7 +1023,7 @@ function App() {
   };
 
   const addInterval = () => {
-    const interval = { minutes: 1, seconds: 0, intensityZone: 'Z3', rpm: 90, rpe: '' };
+    const interval = { minutes: 1, seconds: 0, intensityZone: 'Z3', rpm: 90, rpe: '', exerciseId: '', intervalRecoveryMinutes: 0, intervalRecoverySeconds: 0, description: '', overloadPct: '' };
     setTrainingMethodForm((prev) => ({
       ...prev,
       sets: [{ ...prev.sets[0], intervals: [...prev.sets[0].intervals, interval] }]
@@ -967,7 +1034,9 @@ function App() {
     sets: [{ ...prev.sets[0], intervals: prev.sets[0].intervals.filter((_, iIndex) => iIndex !== intervalIndex) }]
   }));
 
-  const previewStressScore = useMemo(() => trainingMethodForm.sets.reduce((total, set) => {
+  const previewStressScore = useMemo(() => {
+    if (trainingMethodForm.trainingMode !== 'in_bici') return 0;
+    return trainingMethodForm.sets.reduce((total, set) => {
     const series = Number(set.seriesCount || 0);
     const setStress = set.intervals.reduce((acc, interval) => {
       const duration = Number(interval.minutes || 0) * 60 + Number(interval.seconds || 0);
@@ -975,7 +1044,8 @@ function App() {
       return acc + duration * weight;
     }, 0);
     return total + setStress * series;
-  }, 0), [trainingMethodForm.sets]);
+    }, 0);
+  }, [trainingMethodForm.sets, trainingMethodForm.trainingMode]);
 
 
   const handleAthleteFieldChange = (field, value) => {
@@ -1161,6 +1231,7 @@ function App() {
                   <button type="button" onClick={() => setMode('training-categories')}>Categorie metodi</button>
                   <button type="button" onClick={() => setMode('athlete-categories')}>Categorie atleti</button>
                   <button type="button" onClick={() => setMode('disciplines')}>Discipline</button>
+                <button type="button" onClick={() => setMode('training-exercises')}>Esercizi</button>
                 </div>
               </div>
 
@@ -1172,43 +1243,32 @@ function App() {
                   <label>Macro area<select value={trainingMethodForm.macroArea} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, macroArea: e.target.value })}>{macroAreas.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
                   <label>Periodo<select value={trainingMethodForm.period} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, period: e.target.value })}>{trainingPeriods.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
                   <label>Tipologia metodo<select value={trainingMethodForm.methodType} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, methodType: e.target.value })}>{trainingMethodTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+                  <label>Modalità<select value={trainingMethodForm.trainingMode} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, trainingMode: e.target.value })}>{trainingModes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
                   <label>Incremento settimanale (%)<input type="number" min="0" max="100" step="0.5" value={trainingMethodForm.progressionIncrementPct} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, progressionIncrementPct: e.target.value })} /></label>
                   <label>Note<textarea value={trainingMethodForm.notes} onChange={(e) => setTrainingMethodForm({ ...trainingMethodForm, notes: e.target.value })} /></label>
 
-                  <div className="table-wrap">
-                    <h4>Seleziona dettagli obiettivo</h4>
-                    <table>
-                      <thead><tr><th>Seleziona</th><th>ID</th><th>Dettaglio</th><th>Macro area</th></tr></thead>
-                      <tbody>
-                        {trainingObjectiveDetails.map((detail) => (
-                          <tr key={detail.id}><td><input type="checkbox" checked={trainingMethodForm.objectiveDetailIds.includes(detail.id)} onChange={() => toggleMultiValue('objectiveDetailIds', detail.id)} /></td><td>{detail.id}</td><td>{detail.name}</td><td>{detail.macroArea}</td></tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  <div className="table-wrap">
-                    <h4>Seleziona categorie</h4>
-                    <table>
-                      <thead><tr><th>Seleziona</th><th>ID</th><th>Categoria</th></tr></thead>
-                      <tbody>
-                        {trainingCategories.map((category) => (
-                          <tr key={category.id}><td><input type="checkbox" checked={trainingMethodForm.categoryIds.includes(category.id)} onChange={() => toggleMultiValue('categoryIds', category.id)} /></td><td>{category.id}</td><td>{category.name}</td></tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  <div className="table-wrap">
-                    <h4>Seleziona discipline</h4>
-                    <table>
-                      <thead><tr><th>Seleziona</th><th>ID</th><th>Disciplina</th></tr></thead>
-                      <tbody>
-                        {disciplines.map((discipline) => (
-                          <tr key={discipline.id}><td><input type="checkbox" checked={trainingMethodForm.disciplineIds.includes(discipline.id)} onChange={() => toggleMultiValue('disciplineIds', discipline.id)} /></td><td>{discipline.id}</td><td>{discipline.name}</td></tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  <div className="compact-selector-grid">
+                    <div className="compact-selector">
+                      <h4>Dettagli obiettivo</h4>
+                      <small>Selezionati: {trainingMethodForm.objectiveDetailIds.length} {selectedNames(trainingObjectiveDetails, trainingMethodForm.objectiveDetailIds)}</small>
+                      <div className="check-list">{trainingObjectiveDetails.map((detail) => (
+                        <label key={detail.id} className="check-item"><input type="checkbox" checked={trainingMethodForm.objectiveDetailIds.includes(detail.id)} onChange={() => toggleMultiValue('objectiveDetailIds', detail.id)} /> {detail.name}</label>
+                      ))}</div>
+                    </div>
+                    <div className="compact-selector">
+                      <h4>Categorie</h4>
+                      <small>Selezionate: {trainingMethodForm.categoryIds.length} {selectedNames(trainingCategories, trainingMethodForm.categoryIds)}</small>
+                      <div className="check-list">{trainingCategories.map((category) => (
+                        <label key={category.id} className="check-item"><input type="checkbox" checked={trainingMethodForm.categoryIds.includes(category.id)} onChange={() => toggleMultiValue('categoryIds', category.id)} /> {category.name}</label>
+                      ))}</div>
+                    </div>
+                    <div className="compact-selector">
+                      <h4>Discipline</h4>
+                      <small>Selezionate: {trainingMethodForm.disciplineIds.length} {selectedNames(disciplines, trainingMethodForm.disciplineIds)}</small>
+                      <div className="check-list">{disciplines.map((discipline) => (
+                        <label key={discipline.id} className="check-item"><input type="checkbox" checked={trainingMethodForm.disciplineIds.includes(discipline.id)} onChange={() => toggleMultiValue('disciplineIds', discipline.id)} /> {discipline.name}</label>
+                      ))}</div>
+                    </div>
                   </div>
 
                   {trainingMethodForm.sets.map((set, setIndex) => (
@@ -1224,9 +1284,7 @@ function App() {
                           <h5>Intervallo #{intervalIndex + 1}</h5>
                           <label>Minuti<input type="number" min="0" value={interval.minutes} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'minutes', e.target.value)} /></label>
                           <label>Secondi<input type="number" min="0" max="59" value={interval.seconds} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'seconds', e.target.value)} /></label>
-                          <label>Zona<select value={interval.intensityZone} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'intensityZone', e.target.value)}>{zoneRules.map((rule) => <option key={rule.zone} value={rule.zone}>{rule.zone}</option>)}</select></label>
-                          <label>RPM<input type="number" min="0" value={interval.rpm} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'rpm', e.target.value)} /></label>
-                          <label>RPE<input type="number" min="0" step="0.5" value={interval.rpe} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'rpe', e.target.value)} /></label>
+                          {trainingMethodForm.trainingMode === 'in_bici' ? (<><label>Zona<select value={interval.intensityZone} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'intensityZone', e.target.value)}>{zoneRules.map((rule) => <option key={rule.zone} value={rule.zone}>{rule.zone}</option>)}</select></label><label>RPM<input type="number" min="0" value={interval.rpm} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'rpm', e.target.value)} /></label><label>RPE<input type="number" min="0" step="0.5" value={interval.rpe} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'rpe', e.target.value)} /></label></>) : (<><label>Esercizio<select value={interval.exerciseId} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'exerciseId', e.target.value)}><option value="">Seleziona</option>{trainingExercises.map((exercise) => <option key={exercise.id} value={exercise.id}>{exercise.name}</option>)}</select></label><label>Recupero intervallo (min)<input type="number" min="0" value={interval.intervalRecoveryMinutes} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'intervalRecoveryMinutes', e.target.value)} /></label><label>Recupero intervallo (sec)<input type="number" min="0" max="59" value={interval.intervalRecoverySeconds} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'intervalRecoverySeconds', e.target.value)} /></label><label>Sovraccarico (% max)<input type="number" min="0" step="0.5" value={interval.overloadPct} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'overloadPct', e.target.value)} /></label><label className="interval-description">Descrizione intervallo<textarea value={interval.description || ''} onChange={(e) => updateIntervalField(setIndex, intervalIndex, 'description', e.target.value)} /></label></>)}
                           {set.intervals.length > 1 && <button type="button" className="danger" onClick={() => removeInterval(setIndex, intervalIndex)}>Rimuovi intervallo</button>}
                         </div>
                       ))}
@@ -1236,7 +1294,7 @@ function App() {
                     </div>
                   ))}
 
-                  <p>Punteggio stress stimato: <strong>{Math.round(previewStressScore)}</strong></p>
+                  {trainingMethodForm.trainingMode === 'in_bici' && <p>Punteggio stress stimato: <strong>{Math.round(previewStressScore)}</strong></p>}
                   <div className="actions">
                     <button type="submit">{editingMethodId ? 'Aggiorna metodo' : 'Salva metodo'}</button>
                     <button type="button" className="secondary" onClick={cancelTrainingMethodEditing}>Annulla</button>
@@ -1250,19 +1308,20 @@ function App() {
                   </div>
                   <div className="table-wrap">
                     <table>
-                      <thead><tr><th>Nome</th><th>Codice</th><th>Obiettivi</th><th>Categorie</th><th>Discipline</th><th>Stress</th><th>Dettaglio</th><th>Azioni</th></tr></thead>
+                      <thead><tr><th>Nome</th><th>Codice</th><th>Modalità</th><th>Obiettivi</th><th>Categorie</th><th>Discipline</th><th>Stress</th><th>Dettaglio</th><th>Azioni</th></tr></thead>
                       <tbody>
                         {trainingMethods.map((method) => (
                           <tr key={method.id}>
                             <td>{method.name}</td>
                             <td>{method.code}</td>
+                            <td>{(trainingModes.find((m) => m.value === method.trainingMode)?.label) || method.trainingMode}</td>
                             <td>{(method.objectiveDetailNames || []).join(', ')}</td>
                             <td>{(method.categoryNames || []).join(', ')}</td>
                             <td>{(method.disciplineNames || []).join(', ')}</td>
                             <td>{method.stressScore ?? '-'}</td>
                             <td>
                               {method.sets.map((set) => (
-                                <div key={set.id}>{set.seriesCount} serie, rec {Math.floor(set.recoverySeconds / 60)}:{String(set.recoverySeconds % 60).padStart(2, '0')} - {set.intervals.map((i) => `${i.minutes}m${i.seconds}s ${i.intensityZone || '-'} rpm ${i.rpm || '-'} rpe ${i.rpe || '-'}`).join(' | ')}</div>
+                                <div key={set.id}>{set.seriesCount} serie, rec {Math.floor(set.recoverySeconds / 60)}:{String(set.recoverySeconds % 60).padStart(2, '0')} - {set.intervals.map((i) => method.trainingMode === 'in_bici' ? `${i.minutes}m${i.seconds}s ${i.intensityZone || '-'} rpm ${i.rpm || '-'} rpe ${i.rpe || '-'}` : `${i.minutes}m${i.seconds}s ${i.exerciseName || '-'} rec ${Math.floor((i.recoverySeconds || 0) / 60)}:${String((i.recoverySeconds || 0) % 60).padStart(2, '0')} sovr. ${i.overloadPct || '-'}%`).join(' | ')}</div>
                               ))}
                             </td>
                             <td>
@@ -1291,6 +1350,7 @@ function App() {
                 <button type="button" onClick={() => setMode('training-categories')}>Categorie metodi</button>
                 <button type="button" onClick={() => setMode('athlete-categories')}>Categorie atleti</button>
                 <button type="button" onClick={() => setMode('disciplines')}>Discipline</button>
+                <button type="button" onClick={() => setMode('training-exercises')}>Esercizi</button>
                 <button type="button" onClick={() => setMode('coach-zone-config')}>Zone coach (percentuali)</button>
               </div>
             </section>
@@ -1465,6 +1525,38 @@ function App() {
             </section>
           )}
 
+
+
+          {mode === 'training-exercises' && isCoachUser && (
+            <section className="card">
+              <div className="row">
+                <h2>Esercizi</h2>
+                <button type="button" className="secondary" onClick={() => setMode('general-master-data')}>Torna alle anagrafiche</button>
+              </div>
+              <form onSubmit={handleSaveExercise} className="subcard">
+                <h3>{editingExerciseId ? `Modifica esercizio #${editingExerciseId}` : 'Nuovo esercizio'}</h3>
+                <label>Nome esercizio<input value={exerciseForm.name} onChange={(e) => setExerciseForm({ name: e.target.value })} required /></label>
+                <div className="actions">
+                  <button type="submit">{editingExerciseId ? 'Salva modifica' : 'Aggiungi esercizio'}</button>
+                  {editingExerciseId && <button type="button" className="secondary" onClick={cancelExerciseEditing}>Annulla</button>}
+                </div>
+              </form>
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>ID</th><th>Nome</th><th>Azioni</th></tr></thead>
+                  <tbody>
+                    {trainingExercises.map((exercise) => (
+                      <tr key={exercise.id}>
+                        <td>{exercise.id}</td>
+                        <td>{exercise.name}</td>
+                        <td><div className="actions"><button type="button" onClick={() => startEditingExercise(exercise)}>Modifica</button><button type="button" className="danger" onClick={() => deleteExercise(exercise.id)}>Elimina</button></div></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
 
           {mode === 'athlete-profile' && (
             <section className="card">
