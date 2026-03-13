@@ -16,6 +16,8 @@ const TRAINING_METHOD_TYPES = new Set(['single', 'monthly_weekly', 'monthly_biwe
 const TRAINING_MODES = new Set(['in_bici', 'in_palestra', 'a_corpo_libero']);
 const ZONE_STRESS_WEIGHTS = { Z1: 1, Z2: 2, Z3: 3, Z4: 5, Z5: 7, Z6: 9, Z7: 11 };
 
+const createEmptyMonthlyPlan = () => Array.from({ length: 4 }, () => Array.from({ length: 7 }, () => []));
+
 app.use(cors());
 app.use(express.json());
 
@@ -344,7 +346,23 @@ const sanitizeMonthlyPlanGrid = (grid) => {
     if (!Array.isArray(week) || week.length !== 7) return null;
     const weekDays = week.map((day) => {
       if (!Array.isArray(day)) return [];
-      return [...new Set(day.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0))];
+      const normalizedDay = day
+        .map((value) => {
+          if (typeof value === 'object' && value !== null) return Number(value.methodId);
+          return Number(value);
+        })
+        .filter((value) => Number.isInteger(value) && value > 0)
+        .map((methodId) => ({ methodId }));
+
+      const uniqueByMethod = [];
+      const seen = new Set();
+      normalizedDay.forEach((item) => {
+        if (seen.has(item.methodId)) return;
+        seen.add(item.methodId);
+        uniqueByMethod.push(item);
+      });
+
+      return uniqueByMethod;
     });
     normalized.push(weekDays);
   }
@@ -352,9 +370,46 @@ const sanitizeMonthlyPlanGrid = (grid) => {
   return normalized;
 };
 
-const mapMonthlyPlan = (planRow, athleteAssignment = null) => {
-  const basePlan = JSON.parse(planRow.plan_json);
-  const plan = athleteAssignment?.custom_plan_json ? JSON.parse(athleteAssignment.custom_plan_json) : basePlan;
+const sanitizeMethodEvaluationPayload = (payload = {}) => {
+  const stars = ['liking', 'difficulty', 'perceivedFatigue', 'eveningRecovery', 'nextDayRecovery'];
+  const parsed = {};
+  for (const key of stars) {
+    const value = Number(payload[key]);
+    if (!Number.isInteger(value) || value < 1 || value > 5) {
+      return { error: `Valore ${key} non valido (deve essere 1-5)` };
+    }
+    parsed[key] = value;
+  }
+
+  const completionPct = Number(payload.completionPct);
+  if (!Number.isFinite(completionPct) || completionPct < 0 || completionPct > 100) {
+    return { error: 'Percentuale di svolgimento non valida (0-100)' };
+  }
+
+  const performedAt = String(payload.performedAt || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(performedAt)) {
+    return { error: 'Data svolgimento non valida' };
+  }
+
+  return {
+    data: {
+      performedAt,
+      ...parsed,
+      completionPct,
+      notes: payload.notes?.trim() || null
+    }
+  };
+};
+
+const normalizePlanEntries = (grid) => (
+  sanitizeMonthlyPlanGrid(grid) || createEmptyMonthlyPlan()
+);
+
+const mapMonthlyPlan = (planRow, athleteAssignment = null, evaluationMap = {}) => {
+  const basePlan = normalizePlanEntries(JSON.parse(planRow.plan_json));
+  const plan = athleteAssignment?.custom_plan_json
+    ? normalizePlanEntries(JSON.parse(athleteAssignment.custom_plan_json))
+    : basePlan;
 
   return {
     id: planRow.id,
@@ -362,6 +417,7 @@ const mapMonthlyPlan = (planRow, athleteAssignment = null) => {
     name: planRow.name,
     plan,
     basePlan,
+    evaluationMap,
     isCustomized: Boolean(athleteAssignment?.custom_plan_json),
     updatedAt: athleteAssignment?.updated_at || planRow.updated_at,
     createdAt: planRow.created_at
@@ -456,6 +512,26 @@ const mapTrainingMethod = (methodRow) => {
     createdAt: methodRow.created_at,
     updatedAt: methodRow.updated_at
   };
+};
+
+const buildEvaluationMapForAssignment = (planId, athleteId) => {
+  const rows = db.prepare(`
+    SELECT id, week_index AS weekIndex, day_index AS dayIndex, method_id AS methodId,
+      performed_at AS performedAt, liking, difficulty, perceived_fatigue AS perceivedFatigue,
+      evening_recovery AS eveningRecovery, next_day_recovery AS nextDayRecovery,
+      completion_pct AS completionPct, notes, updated_at AS updatedAt
+    FROM athlete_method_evaluations
+    WHERE plan_id = ? AND athlete_id = ?
+    ORDER BY updated_at DESC, id DESC
+  `).all(planId, athleteId);
+
+  return rows.reduce((acc, row) => {
+    const key = `${row.weekIndex}-${row.dayIndex}-${row.methodId}`;
+    if (!acc[key]) {
+      acc[key] = row;
+    }
+    return acc;
+  }, {});
 };
 
 const validateTrainingMethodPayload = (payload) => {
@@ -1743,7 +1819,8 @@ app.get('/api/monthly-plans', auth, (req, res) => {
 
     return res.json(assignmentRows.map((row) => mapMonthlyPlan(
       row,
-      { custom_plan_json: row.customPlanJson, updated_at: row.assignmentUpdatedAt }
+      { custom_plan_json: row.customPlanJson, updated_at: row.assignmentUpdatedAt },
+      buildEvaluationMapForAssignment(row.id, req.user.id)
     )));
   } catch (error) {
     return res.status(500).json({ message: error.message });
@@ -1874,12 +1951,107 @@ app.get('/api/monthly-plans/:id/athletes/:athleteId', auth, (req, res) => {
   if (!assignment) return res.status(404).json({ message: 'Assegnazione non trovata' });
 
   return res.json({
-    ...mapMonthlyPlan(plan, assignment),
+    ...mapMonthlyPlan(plan, assignment, buildEvaluationMapForAssignment(planId, athleteId)),
     athleteId,
     compactDetails: JSON.parse(JSON.stringify((db.prepare('SELECT * FROM training_methods WHERE coach_id = ?').all(plan.coach_id).map((m) => {
       const full = mapTrainingMethod(m);
       return { id: full.id, compactDetail: buildMethodCompactDetail(full), notes: full.notes || '' };
     }))))
+  });
+});
+
+app.post('/api/monthly-plans/:id/athletes/:athleteId/evaluations', auth, (req, res) => {
+  const planId = Number(req.params.id);
+  const athleteId = Number(req.params.athleteId);
+  if (!Number.isInteger(planId) || planId <= 0 || !Number.isInteger(athleteId) || athleteId <= 0) {
+    return res.status(400).json({ message: 'Parametri non validi' });
+  }
+
+  if (!isCoach(req.user) && req.user.id !== athleteId) {
+    return res.status(403).json({ message: 'Non autorizzato' });
+  }
+
+  const plan = db.prepare('SELECT * FROM monthly_plans WHERE id = ?').get(planId);
+  if (!plan) return res.status(404).json({ message: 'Tabella non trovata' });
+
+  if (isCoach(req.user) && plan.coach_id !== req.user.id) {
+    return res.status(403).json({ message: 'Non autorizzato' });
+  }
+
+  const assignment = db.prepare('SELECT * FROM monthly_plan_assignments WHERE plan_id = ? AND athlete_id = ?').get(planId, athleteId);
+  if (!assignment) return res.status(404).json({ message: 'Assegnazione non trovata' });
+
+  const weekIndex = Number(req.body?.weekIndex);
+  const dayIndex = Number(req.body?.dayIndex);
+  const methodId = Number(req.body?.methodId);
+  if (!Number.isInteger(weekIndex) || weekIndex < 0 || weekIndex > 3 || !Number.isInteger(dayIndex) || dayIndex < 0 || dayIndex > 6 || !Number.isInteger(methodId) || methodId <= 0) {
+    return res.status(400).json({ message: 'Posizione metodo non valida' });
+  }
+
+  const mapped = mapMonthlyPlan(plan, assignment);
+  const dayMethods = mapped.plan?.[weekIndex]?.[dayIndex] || [];
+  const methodInDay = dayMethods.some((item) => Number(item?.methodId) === methodId);
+  if (!methodInDay) {
+    return res.status(400).json({ message: 'Il metodo non è presente in quel giorno' });
+  }
+
+  const validation = sanitizeMethodEvaluationPayload(req.body || {});
+  if (validation.error) return res.status(400).json({ message: validation.error });
+
+  const payload = validation.data;
+  const now = new Date().toISOString();
+  const existing = db.prepare(`
+    SELECT id FROM athlete_method_evaluations
+    WHERE plan_id = ? AND athlete_id = ? AND week_index = ? AND day_index = ? AND method_id = ?
+  `).get(planId, athleteId, weekIndex, dayIndex, methodId);
+
+  if (existing) {
+    db.prepare(`
+      UPDATE athlete_method_evaluations
+      SET performed_at = ?, liking = ?, difficulty = ?, perceived_fatigue = ?, evening_recovery = ?, next_day_recovery = ?,
+          completion_pct = ?, notes = ?, updated_at = ?
+      WHERE id = ?
+    `).run(
+      payload.performedAt,
+      payload.liking,
+      payload.difficulty,
+      payload.perceivedFatigue,
+      payload.eveningRecovery,
+      payload.nextDayRecovery,
+      payload.completionPct,
+      payload.notes,
+      now,
+      existing.id
+    );
+  } else {
+    db.prepare(`
+      INSERT INTO athlete_method_evaluations (
+        plan_id, athlete_id, week_index, day_index, method_id,
+        performed_at, liking, difficulty, perceived_fatigue, evening_recovery, next_day_recovery,
+        completion_pct, notes, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      planId,
+      athleteId,
+      weekIndex,
+      dayIndex,
+      methodId,
+      payload.performedAt,
+      payload.liking,
+      payload.difficulty,
+      payload.perceivedFatigue,
+      payload.eveningRecovery,
+      payload.nextDayRecovery,
+      payload.completionPct,
+      payload.notes,
+      now,
+      now
+    );
+  }
+
+  return res.json({
+    success: true,
+    evaluationMap: buildEvaluationMapForAssignment(planId, athleteId)
   });
 });
 
