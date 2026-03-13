@@ -333,6 +333,7 @@ function App() {
   const [selectedPlanId, setSelectedPlanId] = useState(null);
   const [isMonthlyPlanEditorOpen, setIsMonthlyPlanEditorOpen] = useState(false);
   const [expandedAthletePlanId, setExpandedAthletePlanId] = useState(null);
+  const [activeAthleteProfilePlanId, setActiveAthleteProfilePlanId] = useState(null);
   const [athleteEditingId, setAthleteEditingId] = useState('');
   const [athleteCustomPlan, setAthleteCustomPlan] = useState(null);
   const [draggingMethodId, setDraggingMethodId] = useState(null);
@@ -362,6 +363,16 @@ function App() {
     if (!isCoachUser) return savedMonthlyPlans;
     return savedMonthlyPlans.filter((plan) => (plan.assignments || []).some((assignment) => assignment.athleteId === athleteId));
   }, [athleteId, isCoachUser, savedMonthlyPlans]);
+  const athleteCoachMessages = useMemo(() => (
+    savedMonthlyPlans
+      .flatMap((plan) => Object.values(plan.evaluationMap || {}).map((evaluation) => ({
+        ...evaluation,
+        planId: plan.id,
+        planName: plan.name
+      })))
+      .filter((evaluation) => evaluation?.coachMessage)
+      .sort((a, b) => new Date(b.coachMessageUpdatedAt || b.updatedAt || 0).getTime() - new Date(a.coachMessageUpdatedAt || a.updatedAt || 0).getTime())
+  ), [savedMonthlyPlans]);
 
   const filteredTrainingMethods = useMemo(() => {
     const term = methodSearchTerm.trim().toLowerCase();
@@ -485,6 +496,12 @@ function App() {
     loadPlanForEditing(plan);
     setMode('monthly-plans');
     if (!targetAthleteId) return;
+    await loadAthleteCustomization(String(targetAthleteId), planId);
+  };
+
+  const openAthleteProfilePlanCustomization = async (planId, targetAthleteId) => {
+    setSelectedPlanId(planId);
+    setActiveAthleteProfilePlanId(planId);
     await loadAthleteCustomization(String(targetAthleteId), planId);
   };
 
@@ -1067,7 +1084,7 @@ function App() {
   }, [mode, token, athleteId]);
 
   useEffect(() => {
-    if (token && isCoachUser && ['training-methods', 'training-objective-details', 'training-categories', 'athlete-categories', 'disciplines', 'training-exercises', 'general-master-data', 'coach-zone-config', 'monthly-plans'].includes(mode)) {
+    if (token && isCoachUser && ['training-methods', 'training-objective-details', 'training-categories', 'athlete-categories', 'disciplines', 'training-exercises', 'general-master-data', 'coach-zone-config', 'monthly-plans', 'athlete-profile'].includes(mode)) {
       loadTrainingCatalog().catch((err) => setMessage(err.message));
     }
   }, [mode, token, isCoachUser]);
@@ -1544,7 +1561,18 @@ function App() {
                   </div>
                 </>
               ) : (
-                <p>Benvenuto! Consulta le tue tabelle mensili e le eventuali note del coach.</p>
+                <>
+                  <p>Benvenuto! Consulta le tue tabelle mensili e le eventuali note del coach.</p>
+                  <h3>Messaggi del coach</h3>
+                  {athleteCoachMessages.length === 0 && <p>Nessun messaggio disponibile.</p>}
+                  {athleteCoachMessages.slice(0, 8).map((item) => (
+                    <div key={`dash-coach-message-${item.id}`} className="subcard">
+                      <div className="row"><strong>{item.planName}</strong><small>Settimana {item.weekIndex + 1} · {weekDays[item.dayIndex]}</small></div>
+                      <small>{item.methodCode || `Metodo #${item.methodId}`}</small>
+                      <p>💬 {item.coachMessage}</p>
+                    </div>
+                  ))}
+                </>
               )}
             </section>
           )}
@@ -2312,12 +2340,58 @@ Note: ${method.notes}` : ''}`}
                           {isCoachUser && <small>{plan.customPlanApplied ? ' · personalizzata' : ' · base'}</small>}
                         </div>
                         {isCoachUser ? (
-                          <button type="button" className="secondary" onClick={() => openPlanForAthleteCustomization(plan.id, athleteId)}>
-                            Personalizza tabella
-                          </button>
+                          <div className="actions">
+                            <button type="button" className="secondary" onClick={() => openAthleteProfilePlanCustomization(plan.id, athleteId)}>
+                              Personalizza qui
+                            </button>
+                            <button type="button" className="secondary" onClick={() => openPlanForAthleteCustomization(plan.id, athleteId)}>
+                              Apri editor completo
+                            </button>
+                          </div>
                         ) : null}
                       </div>
                     ))}
+
+                    {isCoachUser && athleteCustomPlan && activeAthleteProfilePlanId && selectedPlanId === activeAthleteProfilePlanId && (
+                      <div className="subcard">
+                        <div className="row">
+                          <h4>Personalizzazione tabella atleta (modifica singola)</h4>
+                          <button type="button" className="secondary" onClick={() => { setActiveAthleteProfilePlanId(null); setAthleteEditingId(''); setAthleteCustomPlan(null); }}>Chiudi</button>
+                        </div>
+                        <div className="monthly-plan-grid">
+                          {athleteCustomPlan.map((week, weekIndex) => (
+                            <div key={`profile-custom-week-${weekIndex}`} className="subcard">
+                              <strong>Settimana {weekIndex + 1}</strong>
+                              <div className="week-grid">
+                                {week.map((methodEntries, dayIndex) => (
+                                  <div key={`profile-custom-day-${weekIndex}-${dayIndex}`} className="week-day-dropzone">
+                                    <div className="row">
+                                      <strong>{weekDays[dayIndex]}</strong>
+                                      <button type="button" className="secondary" onClick={() => setDayInsertModal({ weekIndex, dayIndex, useCustom: true, selectedMethodId: '' })}>+</button>
+                                    </div>
+                                    <div className="day-methods">
+                                      {methodEntries.length === 0 && <small>Nessun metodo</small>}
+                                      {methodEntries.map((entry) => {
+                                        const methodId = normalizeDayEntry(entry).methodId;
+                                        const method = getMethodById(methodId);
+                                        if (!method) return null;
+                                        return (
+                                          <div key={`profile-custom-method-${weekIndex}-${dayIndex}-${methodId}`} className="placed-method">
+                                            <span>{method.code} · {method.name}<small>{compactMethodDetail(method)}</small></span>
+                                            <button type="button" className="danger" onClick={() => clearMonthlyPlanCell(weekIndex, dayIndex, methodId, true)}>x</button>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        <button type="button" onClick={saveAthleteCustomization}>Salva personalizzazione atleta</button>
+                      </div>
+                    )}
                   </div>
 
                   <h3>Storico inserimenti</h3>
