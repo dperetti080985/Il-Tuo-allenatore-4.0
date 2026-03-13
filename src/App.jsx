@@ -149,6 +149,11 @@ const performanceProfiles = [
 ];
 
 const zoneStressWeights = { Z1: 1, Z2: 2, Z3: 3, Z4: 5, Z5: 7, Z6: 9, Z7: 11 };
+const weekDays = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica'];
+
+const createEmptyMonthlyPlan = () => (
+  Array.from({ length: 4 }, () => Array.from({ length: 7 }, () => []))
+);
 
 const toTimeInputValue = (minutes, seconds) => {
   const safeMinutes = Math.max(0, Number(minutes) || 0);
@@ -316,10 +321,38 @@ function App() {
   const [coachZoneConfig, setCoachZoneConfig] = useState(zoneRules);
   const [zoneModalSnapshot, setZoneModalSnapshot] = useState(null);
   const [autoZonesPreview, setAutoZonesPreview] = useState(computeAutoZones(null, null));
+  const [monthlyPlanAthleteIds, setMonthlyPlanAthleteIds] = useState([]);
+  const [monthlyPlan, setMonthlyPlan] = useState(createEmptyMonthlyPlan);
+  const [draggingMethodId, setDraggingMethodId] = useState(null);
 
   const isEditing = useMemo(() => editingUserId !== null, [editingUserId]);
   const isCoachUser = currentUser?.userType === 'coach';
   const athleteId = isCoachUser ? selectedAthleteId : currentUser?.id;
+  const athleteUsers = useMemo(() => users.filter((u) => u.userType === 'athlete'), [users]);
+  const assignedAthletes = useMemo(() => athleteUsers.filter((ath) => monthlyPlanAthleteIds.includes(ath.id)), [athleteUsers, monthlyPlanAthleteIds]);
+
+  const toggleMonthlyPlanAthlete = (athleteUserId) => {
+    setMonthlyPlanAthleteIds((prev) => (
+      prev.includes(athleteUserId) ? prev.filter((id) => id !== athleteUserId) : [...prev, athleteUserId]
+    ));
+  };
+
+  const clearMonthlyPlanCell = (weekIndex, dayIndex, methodId) => {
+    setMonthlyPlan((prev) => prev.map((week, wIdx) => week.map((day, dIdx) => {
+      if (wIdx !== weekIndex || dIdx !== dayIndex) return day;
+      return day.filter((id) => id !== methodId);
+    })));
+  };
+
+  const onMonthlyPlanDrop = (weekIndex, dayIndex) => {
+    if (!draggingMethodId) return;
+    setMonthlyPlan((prev) => prev.map((week, wIdx) => week.map((day, dIdx) => {
+      if (wIdx !== weekIndex || dIdx !== dayIndex) return day;
+      if (day.includes(draggingMethodId)) return day;
+      return [...day, draggingMethodId];
+    })));
+    setDraggingMethodId(null);
+  };
 
   useEffect(() => {
     api('/api/status')
@@ -1196,6 +1229,7 @@ function App() {
               <button onClick={() => setMode(isCoachUser ? 'users-list' : 'profile')}>{isCoachUser ? 'Gestione utenti' : 'Gestione mio utente'}</button>
               {!isCoachUser && <button onClick={() => setMode('athlete-profile')}>Profilo atleta</button>}
               {isCoachUser && <button onClick={() => setMode('training-methods')}>Metodi allenamento</button>}
+              {isCoachUser && <button onClick={() => setMode('monthly-plans')}>Tabelle mensili</button>}
               {isCoachUser && <button onClick={() => setMode('general-master-data')}>Anagrafiche campi generali</button>}
             </div>
           </section>
@@ -1414,6 +1448,91 @@ function App() {
                   </div>
                 </>
               )}
+            </section>
+          )}
+
+
+          {mode === 'monthly-plans' && isCoachUser && (
+            <section className="card">
+              <div className="row">
+                <h2>Tabella mensile allenamenti</h2>
+                <button type="button" className="secondary" onClick={() => { setMonthlyPlan(createEmptyMonthlyPlan()); setMonthlyPlanAthleteIds([]); }}>Reset tabella</button>
+              </div>
+              <p>Seleziona uno o più atleti e trascina i metodi nella settimana/giorno desiderati.</p>
+
+              <div className="monthly-plan-layout">
+                <div className="subcard">
+                  <h3>Atleti assegnati</h3>
+                  <div className="check-list">
+                    {athleteUsers.map((athlete) => (
+                      <label key={`plan-athlete-${athlete.id}`} className="check-item">
+                        <input
+                          type="checkbox"
+                          checked={monthlyPlanAthleteIds.includes(athlete.id)}
+                          onChange={() => toggleMonthlyPlanAthlete(athlete.id)}
+                        />
+                        {athlete.firstName} {athlete.lastName}
+                      </label>
+                    ))}
+                  </div>
+                  {assignedAthletes.length > 0 ? (
+                    <small>Assegnata a: {assignedAthletes.map((athlete) => `${athlete.firstName} ${athlete.lastName}`).join(', ')}</small>
+                  ) : (
+                    <small>Nessun atleta assegnato.</small>
+                  )}
+                </div>
+
+                <div className="subcard">
+                  <h3>Metodi disponibili (drag)</h3>
+                  <div className="method-drag-list">
+                    {trainingMethods.map((method) => (
+                      <button
+                        key={`drag-method-${method.id}`}
+                        type="button"
+                        className="method-chip"
+                        draggable
+                        onDragStart={() => setDraggingMethodId(method.id)}
+                        onDragEnd={() => setDraggingMethodId(null)}
+                      >
+                        {method.code} · {method.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="monthly-plan-grid">
+                {monthlyPlan.map((week, weekIndex) => (
+                  <div key={`week-${weekIndex}`} className="subcard">
+                    <h3>Settimana {weekIndex + 1}</h3>
+                    <div className="week-grid">
+                      {week.map((methodIds, dayIndex) => (
+                        <div
+                          key={`day-${weekIndex}-${dayIndex}`}
+                          className="week-day-dropzone"
+                          onDragOver={(event) => event.preventDefault()}
+                          onDrop={() => onMonthlyPlanDrop(weekIndex, dayIndex)}
+                        >
+                          <strong>{weekDays[dayIndex]}</strong>
+                          <div className="day-methods">
+                            {methodIds.length === 0 && <small>Nessun metodo</small>}
+                            {methodIds.map((methodId) => {
+                              const method = trainingMethods.find((item) => item.id === methodId);
+                              if (!method) return null;
+                              return (
+                                <div key={`placed-${weekIndex}-${dayIndex}-${methodId}`} className="placed-method">
+                                  <span>{method.code} · {method.name}</span>
+                                  <button type="button" className="danger" onClick={() => clearMonthlyPlanCell(weekIndex, dayIndex, methodId)}>x</button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </section>
           )}
 
