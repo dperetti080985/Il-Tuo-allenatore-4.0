@@ -386,6 +386,10 @@ const sanitizeMethodEvaluationPayload = (payload = {}) => {
     return { error: 'Percentuale di svolgimento non valida (0-100)' };
   }
 
+  const wasCompleted = typeof payload.wasCompleted === 'boolean'
+    ? payload.wasCompleted
+    : Number(payload.wasCompleted) === 1;
+
   const performedAt = String(payload.performedAt || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(performedAt)) {
     return { error: 'Data svolgimento non valida' };
@@ -396,6 +400,7 @@ const sanitizeMethodEvaluationPayload = (payload = {}) => {
       performedAt,
       ...parsed,
       completionPct,
+      wasCompleted,
       notes: payload.notes?.trim() || null
     }
   };
@@ -519,7 +524,7 @@ const buildEvaluationMapForAssignment = (planId, athleteId) => {
     SELECT id, week_index AS weekIndex, day_index AS dayIndex, method_id AS methodId,
       performed_at AS performedAt, liking, difficulty, perceived_fatigue AS perceivedFatigue,
       evening_recovery AS eveningRecovery, next_day_recovery AS nextDayRecovery,
-      completion_pct AS completionPct, notes, updated_at AS updatedAt
+      completion_pct AS completionPct, was_completed AS wasCompleted, notes, coach_message AS coachMessage, coach_message_updated_at AS coachMessageUpdatedAt, updated_at AS updatedAt
     FROM athlete_method_evaluations
     WHERE plan_id = ? AND athlete_id = ?
     ORDER BY updated_at DESC, id DESC
@@ -2009,7 +2014,7 @@ app.post('/api/monthly-plans/:id/athletes/:athleteId/evaluations', auth, (req, r
     db.prepare(`
       UPDATE athlete_method_evaluations
       SET performed_at = ?, liking = ?, difficulty = ?, perceived_fatigue = ?, evening_recovery = ?, next_day_recovery = ?,
-          completion_pct = ?, notes = ?, updated_at = ?
+          completion_pct = ?, was_completed = ?, notes = ?, updated_at = ?
       WHERE id = ?
     `).run(
       payload.performedAt,
@@ -2019,6 +2024,7 @@ app.post('/api/monthly-plans/:id/athletes/:athleteId/evaluations', auth, (req, r
       payload.eveningRecovery,
       payload.nextDayRecovery,
       payload.completionPct,
+      payload.wasCompleted ? 1 : 0,
       payload.notes,
       now,
       existing.id
@@ -2028,8 +2034,8 @@ app.post('/api/monthly-plans/:id/athletes/:athleteId/evaluations', auth, (req, r
       INSERT INTO athlete_method_evaluations (
         plan_id, athlete_id, week_index, day_index, method_id,
         performed_at, liking, difficulty, perceived_fatigue, evening_recovery, next_day_recovery,
-        completion_pct, notes, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        completion_pct, was_completed, notes, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       planId,
       athleteId,
@@ -2043,6 +2049,7 @@ app.post('/api/monthly-plans/:id/athletes/:athleteId/evaluations', auth, (req, r
       payload.eveningRecovery,
       payload.nextDayRecovery,
       payload.completionPct,
+      payload.wasCompleted ? 1 : 0,
       payload.notes,
       now,
       now
@@ -2053,6 +2060,97 @@ app.post('/api/monthly-plans/:id/athletes/:athleteId/evaluations', auth, (req, r
     success: true,
     evaluationMap: buildEvaluationMapForAssignment(planId, athleteId)
   });
+});
+
+
+app.delete('/api/monthly-plans/:id/athletes/:athleteId/evaluations/:evaluationId', auth, (req, res) => {
+  const planId = Number(req.params.id);
+  const athleteId = Number(req.params.athleteId);
+  const evaluationId = Number(req.params.evaluationId);
+  if (!Number.isInteger(planId) || planId <= 0 || !Number.isInteger(athleteId) || athleteId <= 0 || !Number.isInteger(evaluationId) || evaluationId <= 0) {
+    return res.status(400).json({ message: 'Parametri non validi' });
+  }
+
+  if (!isCoach(req.user) && req.user.id !== athleteId) {
+    return res.status(403).json({ message: 'Non autorizzato' });
+  }
+
+  const plan = db.prepare('SELECT * FROM monthly_plans WHERE id = ?').get(planId);
+  if (!plan) return res.status(404).json({ message: 'Tabella non trovata' });
+
+  if (isCoach(req.user) && plan.coach_id !== req.user.id) {
+    return res.status(403).json({ message: 'Non autorizzato' });
+  }
+
+  const existing = db.prepare('SELECT id FROM athlete_method_evaluations WHERE id = ? AND plan_id = ? AND athlete_id = ?').get(evaluationId, planId, athleteId);
+  if (!existing) return res.status(404).json({ message: 'Valutazione non trovata' });
+
+  db.prepare('DELETE FROM athlete_method_evaluations WHERE id = ?').run(evaluationId);
+
+  return res.json({
+    success: true,
+    evaluationMap: buildEvaluationMapForAssignment(planId, athleteId)
+  });
+});
+
+app.get('/api/coach/evaluations', auth, (req, res) => {
+  if (!isCoach(req.user)) return res.status(403).json({ message: 'Solo coach' });
+
+  const rows = db.prepare(`
+    SELECT e.id, e.plan_id AS planId, e.athlete_id AS athleteId, e.week_index AS weekIndex, e.day_index AS dayIndex,
+      e.method_id AS methodId, e.performed_at AS performedAt, e.liking, e.difficulty,
+      e.perceived_fatigue AS perceivedFatigue, e.evening_recovery AS eveningRecovery,
+      e.next_day_recovery AS nextDayRecovery, e.completion_pct AS completionPct,
+      e.was_completed AS wasCompleted, e.notes, e.coach_message AS coachMessage,
+      e.coach_message_updated_at AS coachMessageUpdatedAt, e.updated_at AS updatedAt,
+      p.name AS planName, u.first_name AS firstName, u.last_name AS lastName,
+      m.code AS methodCode, m.name AS methodName
+    FROM athlete_method_evaluations e
+    JOIN monthly_plans p ON p.id = e.plan_id
+    JOIN users u ON u.id = e.athlete_id
+    JOIN training_methods m ON m.id = e.method_id
+    WHERE p.coach_id = ?
+    ORDER BY e.updated_at DESC, e.id DESC
+  `).all(req.user.id);
+
+  return res.json(rows.map((row) => ({
+    ...row,
+    athleteName: [row.firstName, row.lastName].filter(Boolean).join(' ').trim()
+  })));
+});
+
+app.patch('/api/coach/evaluations/:evaluationId/message', auth, (req, res) => {
+  if (!isCoach(req.user)) return res.status(403).json({ message: 'Solo coach' });
+
+  const evaluationId = Number(req.params.evaluationId);
+  if (!Number.isInteger(evaluationId) || evaluationId <= 0) {
+    return res.status(400).json({ message: 'Valutazione non valida' });
+  }
+
+  const message = req.body?.coachMessage?.trim();
+  if (!message) {
+    return res.status(400).json({ message: 'Messaggio coach obbligatorio' });
+  }
+
+  const evaluation = db.prepare(`
+    SELECT e.id
+    FROM athlete_method_evaluations e
+    JOIN monthly_plans p ON p.id = e.plan_id
+    WHERE e.id = ? AND p.coach_id = ?
+  `).get(evaluationId, req.user.id);
+
+  if (!evaluation) return res.status(404).json({ message: 'Valutazione non trovata' });
+
+  const now = new Date().toISOString();
+  db.prepare('UPDATE athlete_method_evaluations SET coach_message = ?, coach_message_updated_at = ?, updated_at = ? WHERE id = ?').run(message, now, now, evaluationId);
+
+  const updated = db.prepare(`
+    SELECT id, coach_message AS coachMessage, coach_message_updated_at AS coachMessageUpdatedAt
+    FROM athlete_method_evaluations
+    WHERE id = ?
+  `).get(evaluationId);
+
+  return res.json(updated);
 });
 
 app.delete('/api/users/:id', auth, (req, res) => {
