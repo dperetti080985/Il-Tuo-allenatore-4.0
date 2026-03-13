@@ -313,6 +313,61 @@ const secondsFromParts = (minutes, seconds) => {
   return Math.round(m * 60 + sec);
 };
 
+
+const buildMethodCompactDetail = (method) => {
+  if (!method) return '';
+
+  const parts = [];
+  method.sets?.forEach((set, setIndex) => {
+    const intervalParts = (set.intervals || []).map((interval) => {
+      if ((method.trainingMode || 'in_bici') === 'in_bici') {
+        const zone = interval.intensityZone || '-';
+        return `${interval.minutes || 0}m${interval.seconds || 0}s ${zone}`;
+      }
+
+      const exerciseName = interval.exerciseName || 'Esercizio';
+      return `${interval.minutes || 0}x ${exerciseName}`;
+    });
+
+    parts.push(`S${setIndex + 1}: ${set.seriesCount} serie · ${intervalParts.join(' | ')}`);
+  });
+
+  return parts.join(' • ');
+};
+
+const sanitizeMonthlyPlanGrid = (grid) => {
+  if (!Array.isArray(grid)) return null;
+  if (grid.length !== 4) return null;
+
+  const normalized = [];
+  for (const week of grid) {
+    if (!Array.isArray(week) || week.length !== 7) return null;
+    const weekDays = week.map((day) => {
+      if (!Array.isArray(day)) return [];
+      return [...new Set(day.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0))];
+    });
+    normalized.push(weekDays);
+  }
+
+  return normalized;
+};
+
+const mapMonthlyPlan = (planRow, athleteAssignment = null) => {
+  const basePlan = JSON.parse(planRow.plan_json);
+  const plan = athleteAssignment?.custom_plan_json ? JSON.parse(athleteAssignment.custom_plan_json) : basePlan;
+
+  return {
+    id: planRow.id,
+    coachId: planRow.coach_id,
+    name: planRow.name,
+    plan,
+    basePlan,
+    isCustomized: Boolean(athleteAssignment?.custom_plan_json),
+    updatedAt: athleteAssignment?.updated_at || planRow.updated_at,
+    createdAt: planRow.created_at
+  };
+};
+
 const mapTrainingMethod = (methodRow) => {
   const objectiveRows = db
     .prepare(`
@@ -1642,6 +1697,171 @@ app.delete('/api/training-methods/:id', auth, (req, res) => {
   const info = db.prepare('DELETE FROM training_methods WHERE id = ? AND coach_id = ?').run(methodId, req.user.id);
   if (info.changes === 0) return res.status(404).json({ message: 'Metodo non trovato' });
   return res.json({ ok: true });
+});
+
+
+app.get('/api/monthly-plans', auth, (req, res) => {
+  try {
+    if (isCoach(req.user)) {
+      const rows = db.prepare('SELECT * FROM monthly_plans WHERE coach_id = ? ORDER BY updated_at DESC, id DESC').all(req.user.id);
+      const assignments = db.prepare('SELECT plan_id AS planId, athlete_id AS athleteId FROM monthly_plan_assignments WHERE plan_id IN (SELECT id FROM monthly_plans WHERE coach_id = ?)').all(req.user.id);
+      const athleteMapByPlan = assignments.reduce((acc, row) => {
+        acc[row.planId] = acc[row.planId] || [];
+        acc[row.planId].push(row.athleteId);
+        return acc;
+      }, {});
+
+      return res.json(rows.map((row) => ({ ...mapMonthlyPlan(row), athleteIds: athleteMapByPlan[row.id] || [] })));
+    }
+
+    const assignmentRows = db.prepare(`
+      SELECT p.*, a.custom_plan_json AS customPlanJson, a.updated_at AS assignmentUpdatedAt
+      FROM monthly_plan_assignments a
+      JOIN monthly_plans p ON p.id = a.plan_id
+      WHERE a.athlete_id = ?
+      ORDER BY a.updated_at DESC
+    `).all(req.user.id);
+
+    return res.json(assignmentRows.map((row) => mapMonthlyPlan(
+      row,
+      { custom_plan_json: row.customPlanJson, updated_at: row.assignmentUpdatedAt }
+    )));
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
+app.post('/api/monthly-plans', auth, (req, res) => {
+  if (!isCoach(req.user)) return res.status(403).json({ message: 'Solo coach' });
+
+  const name = req.body?.name?.trim();
+  const normalizedPlan = sanitizeMonthlyPlanGrid(req.body?.plan);
+  const athleteIds = uniqueIds(req.body?.athleteIds || []);
+
+  if (!name) return res.status(400).json({ message: 'Nome tabella obbligatorio' });
+  if (!normalizedPlan) return res.status(400).json({ message: 'Formato tabella non valido' });
+
+  try {
+    const now = new Date().toISOString();
+    const insert = db.prepare('INSERT INTO monthly_plans (coach_id, name, plan_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(
+      req.user.id,
+      name,
+      JSON.stringify(normalizedPlan),
+      now,
+      now
+    );
+
+    const planId = insert.lastInsertRowid;
+    const assignmentStmt = db.prepare('INSERT OR REPLACE INTO monthly_plan_assignments (plan_id, athlete_id, custom_plan_json, updated_at) VALUES (?, ?, COALESCE((SELECT custom_plan_json FROM monthly_plan_assignments WHERE plan_id = ? AND athlete_id = ?), NULL), ?)');
+
+    const tx = db.transaction(() => {
+      athleteIds.forEach((athleteId) => assignmentStmt.run(planId, athleteId, planId, athleteId, now));
+    });
+    tx();
+
+    const row = db.prepare('SELECT * FROM monthly_plans WHERE id = ?').get(planId);
+    return res.status(201).json({ ...mapMonthlyPlan(row), athleteIds });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
+app.put('/api/monthly-plans/:id', auth, (req, res) => {
+  if (!isCoach(req.user)) return res.status(403).json({ message: 'Solo coach' });
+
+  const planId = Number(req.params.id);
+  if (!Number.isInteger(planId) || planId <= 0) return res.status(400).json({ message: 'Piano non valido' });
+
+  const current = db.prepare('SELECT * FROM monthly_plans WHERE id = ? AND coach_id = ?').get(planId, req.user.id);
+  if (!current) return res.status(404).json({ message: 'Tabella non trovata' });
+
+  const name = req.body?.name?.trim();
+  const normalizedPlan = sanitizeMonthlyPlanGrid(req.body?.plan);
+  const athleteIds = uniqueIds(req.body?.athleteIds || []);
+
+  if (!name) return res.status(400).json({ message: 'Nome tabella obbligatorio' });
+  if (!normalizedPlan) return res.status(400).json({ message: 'Formato tabella non valido' });
+
+  try {
+    const now = new Date().toISOString();
+    db.prepare('UPDATE monthly_plans SET name = ?, plan_json = ?, updated_at = ? WHERE id = ?').run(name, JSON.stringify(normalizedPlan), now, planId);
+
+    const existing = db.prepare('SELECT athlete_id AS athleteId FROM monthly_plan_assignments WHERE plan_id = ?').all(planId).map((row) => row.athleteId);
+    const toDelete = existing.filter((id) => !athleteIds.includes(id));
+    const toUpsert = athleteIds;
+
+    const upsertStmt = db.prepare('INSERT INTO monthly_plan_assignments (plan_id, athlete_id, custom_plan_json, updated_at) VALUES (?, ?, NULL, ?) ON CONFLICT(plan_id, athlete_id) DO UPDATE SET updated_at = excluded.updated_at');
+    const deleteStmt = db.prepare('DELETE FROM monthly_plan_assignments WHERE plan_id = ? AND athlete_id = ?');
+
+    const tx = db.transaction(() => {
+      toUpsert.forEach((athleteId) => upsertStmt.run(planId, athleteId, now));
+      toDelete.forEach((athleteId) => deleteStmt.run(planId, athleteId));
+    });
+    tx();
+
+    const row = db.prepare('SELECT * FROM monthly_plans WHERE id = ?').get(planId);
+    return res.json({ ...mapMonthlyPlan(row), athleteIds });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
+app.put('/api/monthly-plans/:id/athletes/:athleteId', auth, (req, res) => {
+  if (!isCoach(req.user)) return res.status(403).json({ message: 'Solo coach' });
+
+  const planId = Number(req.params.id);
+  const athleteId = Number(req.params.athleteId);
+  if (!Number.isInteger(planId) || planId <= 0 || !Number.isInteger(athleteId) || athleteId <= 0) {
+    return res.status(400).json({ message: 'Parametri non validi' });
+  }
+
+  const plan = db.prepare('SELECT * FROM monthly_plans WHERE id = ? AND coach_id = ?').get(planId, req.user.id);
+  if (!plan) return res.status(404).json({ message: 'Tabella non trovata' });
+
+  const assignment = db.prepare('SELECT * FROM monthly_plan_assignments WHERE plan_id = ? AND athlete_id = ?').get(planId, athleteId);
+  if (!assignment) return res.status(404).json({ message: 'Atleta non assegnato a questa tabella' });
+
+  const normalizedPlan = sanitizeMonthlyPlanGrid(req.body?.plan);
+  if (!normalizedPlan) return res.status(400).json({ message: 'Formato tabella non valido' });
+
+  try {
+    const now = new Date().toISOString();
+    db.prepare('UPDATE monthly_plan_assignments SET custom_plan_json = ?, updated_at = ? WHERE plan_id = ? AND athlete_id = ?').run(JSON.stringify(normalizedPlan), now, planId, athleteId);
+    return res.json({ success: true });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
+app.get('/api/monthly-plans/:id/athletes/:athleteId', auth, (req, res) => {
+  const planId = Number(req.params.id);
+  const athleteId = Number(req.params.athleteId);
+  if (!Number.isInteger(planId) || planId <= 0 || !Number.isInteger(athleteId) || athleteId <= 0) {
+    return res.status(400).json({ message: 'Parametri non validi' });
+  }
+
+  const plan = db.prepare('SELECT * FROM monthly_plans WHERE id = ?').get(planId);
+  if (!plan) return res.status(404).json({ message: 'Tabella non trovata' });
+
+  if (!isCoach(req.user) && req.user.id !== athleteId) {
+    return res.status(403).json({ message: 'Non autorizzato' });
+  }
+
+  if (isCoach(req.user) && plan.coach_id !== req.user.id) {
+    return res.status(403).json({ message: 'Non autorizzato' });
+  }
+
+  const assignment = db.prepare('SELECT * FROM monthly_plan_assignments WHERE plan_id = ? AND athlete_id = ?').get(planId, athleteId);
+  if (!assignment) return res.status(404).json({ message: 'Assegnazione non trovata' });
+
+  return res.json({
+    ...mapMonthlyPlan(plan, assignment),
+    athleteId,
+    compactDetails: JSON.parse(JSON.stringify((db.prepare('SELECT * FROM training_methods WHERE coach_id = ?').all(plan.coach_id).map((m) => {
+      const full = mapTrainingMethod(m);
+      return { id: full.id, compactDetail: buildMethodCompactDetail(full), notes: full.notes || '' };
+    }))))
+  });
 });
 
 app.delete('/api/users/:id', auth, (req, res) => {

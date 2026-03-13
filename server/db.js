@@ -296,5 +296,32 @@ db.exec(`
   );
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS monthly_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    coach_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    plan_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (coach_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS monthly_plan_assignments (
+    plan_id INTEGER NOT NULL,
+    athlete_id INTEGER NOT NULL,
+    custom_plan_json TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (plan_id, athlete_id),
+    FOREIGN KEY (plan_id) REFERENCES monthly_plans(id) ON DELETE CASCADE,
+    FOREIGN KEY (athlete_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+`);
+
+db.exec('CREATE INDEX IF NOT EXISTS monthly_plans_coach_idx ON monthly_plans(coach_id, updated_at DESC, id DESC);');
+db.exec('CREATE INDEX IF NOT EXISTS monthly_plan_assignments_athlete_idx ON monthly_plan_assignments(athlete_id, updated_at DESC);');
+
 
 export default db;
