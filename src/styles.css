@@ -284,3 +284,36 @@ td {
 .placed-method button {
   padding: 4px 8px;
 }
+
+
+.sticky-panel {
+  position: sticky;
+  top: 10px;
+  align-self: start;
+  max-height: 85vh;
+  overflow: auto;
+}
+
+.method-chip {
+  display: grid;
+  text-align: left;
+  gap: 2px;
+}
+
+.method-chip small {
+  opacity: 0.95;
+}
+
+.placed-method {
+  width: 100%;
+  text-align: left;
+}
+
+.placed-method span {
+  display: grid;
+}
+
+.placed-method small {
+  color: #334155;
+  font-size: 12px;
+}

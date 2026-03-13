@@ -323,7 +323,13 @@ function App() {
   const [autoZonesPreview, setAutoZonesPreview] = useState(computeAutoZones(null, null));
   const [monthlyPlanAthleteIds, setMonthlyPlanAthleteIds] = useState([]);
   const [monthlyPlan, setMonthlyPlan] = useState(createEmptyMonthlyPlan);
+  const [monthlyPlanName, setMonthlyPlanName] = useState('');
+  const [savedMonthlyPlans, setSavedMonthlyPlans] = useState([]);
+  const [selectedPlanId, setSelectedPlanId] = useState(null);
+  const [athleteEditingId, setAthleteEditingId] = useState('');
+  const [athleteCustomPlan, setAthleteCustomPlan] = useState(null);
   const [draggingMethodId, setDraggingMethodId] = useState(null);
+  const [draggingFromCell, setDraggingFromCell] = useState(null);
 
   const isEditing = useMemo(() => editingUserId !== null, [editingUserId]);
   const isCoachUser = currentUser?.userType === 'coach';
@@ -337,22 +343,109 @@ function App() {
     ));
   };
 
-  const clearMonthlyPlanCell = (weekIndex, dayIndex, methodId) => {
-    setMonthlyPlan((prev) => prev.map((week, wIdx) => week.map((day, dIdx) => {
+  const clearMonthlyPlanCell = (weekIndex, dayIndex, methodId, useCustom = false) => {
+    const updater = (prev) => prev.map((week, wIdx) => week.map((day, dIdx) => {
       if (wIdx !== weekIndex || dIdx !== dayIndex) return day;
       return day.filter((id) => id !== methodId);
-    })));
+    }));
+
+    if (useCustom) {
+      setAthleteCustomPlan((prev) => (prev ? updater(prev) : prev));
+      return;
+    }
+    setMonthlyPlan((prev) => updater(prev));
   };
 
-  const onMonthlyPlanDrop = (weekIndex, dayIndex) => {
+  const onMonthlyPlanDrop = (weekIndex, dayIndex, useCustom = false) => {
     if (!draggingMethodId) return;
-    setMonthlyPlan((prev) => prev.map((week, wIdx) => week.map((day, dIdx) => {
-      if (wIdx !== weekIndex || dIdx !== dayIndex) return day;
-      if (day.includes(draggingMethodId)) return day;
-      return [...day, draggingMethodId];
-    })));
+
+    const updater = (prev) => {
+      const base = prev.map((week) => week.map((day) => [...day]));
+
+      if (draggingFromCell) {
+        const { weekIndex: fromWeek, dayIndex: fromDay, methodId } = draggingFromCell;
+        base[fromWeek][fromDay] = base[fromWeek][fromDay].filter((id) => id !== methodId);
+      }
+
+      if (!base[weekIndex][dayIndex].includes(draggingMethodId)) {
+        base[weekIndex][dayIndex].push(draggingMethodId);
+      }
+      return base;
+    };
+
+    if (useCustom) {
+      setAthleteCustomPlan((prev) => (prev ? updater(prev) : prev));
+    } else {
+      setMonthlyPlan((prev) => updater(prev));
+    }
+
     setDraggingMethodId(null);
+    setDraggingFromCell(null);
   };
+
+
+  const saveMonthlyPlan = async () => {
+    if (!monthlyPlanName.trim()) {
+      setMessage('Inserisci un nome tabella, es. Preparazione febbraio 2026');
+      return;
+    }
+
+    try {
+      const payload = { name: monthlyPlanName.trim(), plan: monthlyPlan, athleteIds: monthlyPlanAthleteIds };
+      const endpoint = selectedPlanId ? `/api/monthly-plans/${selectedPlanId}` : '/api/monthly-plans';
+      const method = selectedPlanId ? 'PUT' : 'POST';
+      const saved = await api(endpoint, {
+        method,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      setSelectedPlanId(saved.id);
+      setMessage('Tabella mensile salvata e assegnata.');
+      await loadMonthlyPlans();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const loadPlanForEditing = (plan) => {
+    setSelectedPlanId(plan.id);
+    setMonthlyPlanName(plan.name || '');
+    setMonthlyPlan(plan.plan || createEmptyMonthlyPlan());
+    setMonthlyPlanAthleteIds(plan.athleteIds || []);
+    setAthleteEditingId('');
+    setAthleteCustomPlan(null);
+  };
+
+  const loadAthleteCustomization = async (athleteIdValue) => {
+    setAthleteEditingId(athleteIdValue);
+    if (!athleteIdValue || !selectedPlanId) {
+      setAthleteCustomPlan(null);
+      return;
+    }
+    try {
+      const data = await api(`/api/monthly-plans/${selectedPlanId}/athletes/${athleteIdValue}`, { headers: { Authorization: `Bearer ${token}` } });
+      setAthleteCustomPlan(data.plan || null);
+    } catch (err) {
+      setMessage(err.message);
+      setAthleteCustomPlan(null);
+    }
+  };
+
+  const saveAthleteCustomization = async () => {
+    if (!selectedPlanId || !athleteEditingId || !athleteCustomPlan) return;
+    try {
+      await api(`/api/monthly-plans/${selectedPlanId}/athletes/${athleteEditingId}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan: athleteCustomPlan })
+      });
+      setMessage('Personalizzazione atleta salvata.');
+      await loadMonthlyPlans();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
 
   useEffect(() => {
     api('/api/status')
@@ -825,10 +918,17 @@ function App() {
   }, [mode, token, athleteId]);
 
   useEffect(() => {
-    if (token && isCoachUser && ['training-methods', 'training-objective-details', 'training-categories', 'athlete-categories', 'disciplines', 'training-exercises', 'general-master-data', 'coach-zone-config'].includes(mode)) {
+    if (token && isCoachUser && ['training-methods', 'training-objective-details', 'training-categories', 'athlete-categories', 'disciplines', 'training-exercises', 'general-master-data', 'coach-zone-config', 'monthly-plans'].includes(mode)) {
       loadTrainingCatalog().catch((err) => setMessage(err.message));
     }
   }, [mode, token, isCoachUser]);
+
+
+  useEffect(() => {
+    if (token && mode === 'monthly-plans') {
+      loadMonthlyPlans().catch((err) => setMessage(err.message));
+    }
+  }, [mode, token]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -1045,6 +1145,28 @@ function App() {
 
   const selectedNames = (items, ids) => items.filter((item) => ids.includes(item.id)).map((item) => item.name).join(', ');
 
+  const getMethodById = (id) => trainingMethods.find((item) => item.id === id);
+
+  const compactMethodDetail = (method) => {
+    if (!method) return '';
+    const blocks = (method.sets || []).map((set, setIndex) => {
+      const intervals = (set.intervals || []).map((interval) => {
+        if ((method.trainingMode || 'in_bici') === 'in_bici') {
+          return `${interval.minutes || 0}m${interval.seconds || 0}s ${interval.intensityZone || '-'}`;
+        }
+        return `${interval.minutes || 0}x ${interval.exerciseName || 'esercizio'}`;
+      });
+      return `S${setIndex + 1} ${set.seriesCount} serie · ${intervals.join(' | ')}`;
+    });
+    return blocks.join(' • ');
+  };
+
+  const loadMonthlyPlans = async (authToken = token) => {
+    const data = await api('/api/monthly-plans', { headers: { Authorization: `Bearer ${authToken}` } });
+    setSavedMonthlyPlans(data || []);
+  };
+
+
   const formatIntervalSummary = (interval, trainingMode) => {
     if (trainingMode === 'in_bici') {
       return `${interval.minutes}m${interval.seconds}s ${interval.intensityZone || '-'} rpm ${interval.rpm || '-'} rpe ${interval.rpe || '-'}`;
@@ -1228,6 +1350,7 @@ function App() {
               <button onClick={() => setMode('dashboard')}>Home</button>
               <button onClick={() => setMode(isCoachUser ? 'users-list' : 'profile')}>{isCoachUser ? 'Gestione utenti' : 'Gestione mio utente'}</button>
               {!isCoachUser && <button onClick={() => setMode('athlete-profile')}>Profilo atleta</button>}
+              {!isCoachUser && <button onClick={() => setMode('monthly-plans')}>Le mie tabelle</button>}
               {isCoachUser && <button onClick={() => setMode('training-methods')}>Metodi allenamento</button>}
               {isCoachUser && <button onClick={() => setMode('monthly-plans')}>Tabelle mensili</button>}
               {isCoachUser && <button onClick={() => setMode('general-master-data')}>Anagrafiche campi generali</button>}
@@ -1452,92 +1575,175 @@ function App() {
           )}
 
 
-          {mode === 'monthly-plans' && isCoachUser && (
+          {mode === 'monthly-plans' && (
             <section className="card">
               <div className="row">
-                <h2>Tabella mensile allenamenti</h2>
-                <button type="button" className="secondary" onClick={() => { setMonthlyPlan(createEmptyMonthlyPlan()); setMonthlyPlanAthleteIds([]); }}>Reset tabella</button>
-              </div>
-              <p>Seleziona uno o più atleti e trascina i metodi nella settimana/giorno desiderati.</p>
-
-              <div className="monthly-plan-layout">
-                <div className="subcard">
-                  <h3>Atleti assegnati</h3>
-                  <div className="check-list">
-                    {athleteUsers.map((athlete) => (
-                      <label key={`plan-athlete-${athlete.id}`} className="check-item">
-                        <input
-                          type="checkbox"
-                          checked={monthlyPlanAthleteIds.includes(athlete.id)}
-                          onChange={() => toggleMonthlyPlanAthlete(athlete.id)}
-                        />
-                        {athlete.firstName} {athlete.lastName}
-                      </label>
-                    ))}
-                  </div>
-                  {assignedAthletes.length > 0 ? (
-                    <small>Assegnata a: {assignedAthletes.map((athlete) => `${athlete.firstName} ${athlete.lastName}`).join(', ')}</small>
-                  ) : (
-                    <small>Nessun atleta assegnato.</small>
-                  )}
-                </div>
-
-                <div className="subcard">
-                  <h3>Metodi disponibili (drag)</h3>
-                  <div className="method-drag-list">
-                    {trainingMethods.map((method) => (
-                      <button
-                        key={`drag-method-${method.id}`}
-                        type="button"
-                        className="method-chip"
-                        draggable
-                        onDragStart={() => setDraggingMethodId(method.id)}
-                        onDragEnd={() => setDraggingMethodId(null)}
-                      >
-                        {method.code} · {method.name}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                <h2>Tabelle mensili allenamenti</h2>
+                {isCoachUser && <button type="button" className="secondary" onClick={() => { setMonthlyPlan(createEmptyMonthlyPlan()); setMonthlyPlanAthleteIds([]); setMonthlyPlanName(''); setSelectedPlanId(null); setAthleteEditingId(''); setAthleteCustomPlan(null); }}>Nuova tabella</button>}
               </div>
 
-              <div className="monthly-plan-grid">
-                {monthlyPlan.map((week, weekIndex) => (
-                  <div key={`week-${weekIndex}`} className="subcard">
-                    <h3>Settimana {weekIndex + 1}</h3>
-                    <div className="week-grid">
-                      {week.map((methodIds, dayIndex) => (
-                        <div
-                          key={`day-${weekIndex}-${dayIndex}`}
-                          className="week-day-dropzone"
-                          onDragOver={(event) => event.preventDefault()}
-                          onDrop={() => onMonthlyPlanDrop(weekIndex, dayIndex)}
-                        >
-                          <strong>{weekDays[dayIndex]}</strong>
-                          <div className="day-methods">
-                            {methodIds.length === 0 && <small>Nessun metodo</small>}
-                            {methodIds.map((methodId) => {
-                              const method = trainingMethods.find((item) => item.id === methodId);
-                              if (!method) return null;
-                              return (
-                                <div key={`placed-${weekIndex}-${dayIndex}-${methodId}`} className="placed-method">
-                                  <span>{method.code} · {method.name}</span>
-                                  <button type="button" className="danger" onClick={() => clearMonthlyPlanCell(weekIndex, dayIndex, methodId)}>x</button>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      ))}
+              {isCoachUser && (
+                <>
+                  <p>La lista metodi resta sempre visibile durante lo scroll. Puoi trascinare dal catalogo e anche da un giorno all'altro.</p>
+                  <label>Nome tabella
+                    <input value={monthlyPlanName} onChange={(e) => setMonthlyPlanName(e.target.value)} placeholder="Es. Preparazione febbraio 2026" />
+                  </label>
+
+                  <div className="monthly-plan-layout">
+                    <div className="subcard sticky-panel">
+                      <h3>Atleti assegnati</h3>
+                      <div className="check-list">
+                        {athleteUsers.map((athlete) => (
+                          <label key={`plan-athlete-${athlete.id}`} className="check-item">
+                            <input type="checkbox" checked={monthlyPlanAthleteIds.includes(athlete.id)} onChange={() => toggleMonthlyPlanAthlete(athlete.id)} />
+                            {athlete.firstName} {athlete.lastName}
+                          </label>
+                        ))}
+                      </div>
+
+                      <h3>Metodi disponibili (drag)</h3>
+                      <div className="method-drag-list">
+                        {trainingMethods.map((method) => (
+                          <button
+                            key={`drag-method-${method.id}`}
+                            type="button"
+                            className="method-chip"
+                            draggable
+                            title={`${compactMethodDetail(method)}${method.notes ? `
+
+Note: ${method.notes}` : ''}`}
+                            onDragStart={() => { setDraggingMethodId(method.id); setDraggingFromCell(null); }}
+                            onDragEnd={() => { setDraggingMethodId(null); setDraggingFromCell(null); }}
+                          >
+                            <strong>{method.code} · {method.name}</strong>
+                            <small>{compactMethodDetail(method)}</small>
+                          </button>
+                        ))}
+                      </div>
+                      <button type="button" onClick={saveMonthlyPlan}>Salva/Assegna tabella</button>
+                    </div>
+
+                    <div className="subcard">
+                      <h3>Tabelle salvate</h3>
+                      <div className="day-methods">
+                        {savedMonthlyPlans.length === 0 && <small>Nessuna tabella salvata</small>}
+                        {savedMonthlyPlans.map((plan) => (
+                          <button key={`saved-plan-${plan.id}`} type="button" className="secondary" onClick={() => loadPlanForEditing(plan)}>
+                            {plan.name}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   </div>
-                ))}
-              </div>
+
+                  <div className="monthly-plan-grid">
+                    {monthlyPlan.map((week, weekIndex) => (
+                      <div key={`week-${weekIndex}`} className="subcard">
+                        <h3>Settimana {weekIndex + 1}</h3>
+                        <div className="week-grid">
+                          {week.map((methodIds, dayIndex) => (
+                            <div key={`day-${weekIndex}-${dayIndex}`} className="week-day-dropzone" onDragOver={(event) => event.preventDefault()} onDrop={() => onMonthlyPlanDrop(weekIndex, dayIndex)}>
+                              <strong>{weekDays[dayIndex]}</strong>
+                              <div className="day-methods">
+                                {methodIds.length === 0 && <small>Nessun metodo</small>}
+                                {methodIds.map((methodId) => {
+                                  const method = getMethodById(methodId);
+                                  if (!method) return null;
+                                  return (
+                                    <div key={`placed-${weekIndex}-${dayIndex}-${methodId}`} className="placed-method" draggable onDragStart={() => { setDraggingMethodId(methodId); setDraggingFromCell({ weekIndex, dayIndex, methodId }); }} onDragEnd={() => { setDraggingMethodId(null); setDraggingFromCell(null); }} title={`${compactMethodDetail(method)}${method.notes ? `
+
+Note: ${method.notes}` : ''}`}>
+                                      <span>{method.code} · {method.name}<small>{compactMethodDetail(method)}</small></span>
+                                      <button type="button" className="danger" onClick={() => clearMonthlyPlanCell(weekIndex, dayIndex, methodId)}>x</button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {selectedPlanId && (
+                    <div className="subcard">
+                      <h3>Personalizzazione per singolo atleta</h3>
+                      <label>Atleta
+                        <select value={athleteEditingId} onChange={(e) => loadAthleteCustomization(e.target.value)}>
+                          <option value="">Seleziona atleta assegnato</option>
+                          {athleteUsers.filter((ath) => monthlyPlanAthleteIds.includes(ath.id)).map((ath) => <option key={`ath-custom-${ath.id}`} value={ath.id}>{ath.firstName} {ath.lastName}</option>)}
+                        </select>
+                      </label>
+                      {athleteCustomPlan && (
+                        <>
+                          <div className="monthly-plan-grid">
+                            {athleteCustomPlan.map((week, weekIndex) => (
+                              <div key={`custom-week-${weekIndex}`} className="subcard">
+                                <h4>Settimana {weekIndex + 1}</h4>
+                                <div className="week-grid">
+                                  {week.map((methodIds, dayIndex) => (
+                                    <div key={`custom-day-${weekIndex}-${dayIndex}`} className="week-day-dropzone" onDragOver={(event) => event.preventDefault()} onDrop={() => onMonthlyPlanDrop(weekIndex, dayIndex, true)}>
+                                      <strong>{weekDays[dayIndex]}</strong>
+                                      <div className="day-methods">
+                                        {methodIds.map((methodId) => {
+                                          const method = getMethodById(methodId);
+                                          if (!method) return null;
+                                          return <div key={`custom-placed-${weekIndex}-${dayIndex}-${methodId}`} className="placed-method" draggable onDragStart={() => { setDraggingMethodId(methodId); setDraggingFromCell({ weekIndex, dayIndex, methodId }); }} onDragEnd={() => { setDraggingMethodId(null); setDraggingFromCell(null); }}><span>{method.code} · {method.name}</span><button type="button" className="danger" onClick={() => clearMonthlyPlanCell(weekIndex, dayIndex, methodId, true)}>x</button></div>;
+                                        })}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          <button type="button" onClick={saveAthleteCustomization}>Salva personalizzazione atleta</button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+
+              {!isCoachUser && (
+                <div>
+                  <h3>Le tue tabelle assegnate</h3>
+                  {savedMonthlyPlans.length === 0 && <p>Non hai ancora tabelle assegnate.</p>}
+                  {savedMonthlyPlans.map((plan) => (
+                    <div key={`ath-plan-${plan.id}`} className="subcard">
+                      <h4>{plan.name}</h4>
+                      <div className="monthly-plan-grid">
+                        {plan.plan.map((week, weekIndex) => (
+                          <div key={`ath-week-${plan.id}-${weekIndex}`} className="subcard">
+                            <strong>Settimana {weekIndex + 1}</strong>
+                            <div className="week-grid">
+                              {week.map((methodIds, dayIndex) => (
+                                <div key={`ath-day-${plan.id}-${weekIndex}-${dayIndex}`} className="week-day-dropzone">
+                                  <strong>{weekDays[dayIndex]}</strong>
+                                  <div className="day-methods">
+                                    {methodIds.length === 0 && <small>Nessun metodo</small>}
+                                    {methodIds.map((methodId) => {
+                                      const method = getMethodById(methodId);
+                                      if (!method) return null;
+                                      return <div key={`ath-method-${plan.id}-${weekIndex}-${dayIndex}-${methodId}`} className="placed-method"><span>{method.code} · {method.name}<small>{compactMethodDetail(method)}</small></span></div>;
+                                    })}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </section>
           )}
 
 
-          {mode === 'general-master-data' && isCoachUser && (
+                    {mode === 'general-master-data' && isCoachUser && (
             <section className="card">
               <h2>Anagrafiche campi generali</h2>
               <div className="actions">
