@@ -334,6 +334,9 @@ function App() {
   const [isMonthlyPlanEditorOpen, setIsMonthlyPlanEditorOpen] = useState(false);
   const [expandedAthletePlanId, setExpandedAthletePlanId] = useState(null);
   const [activeAthleteProfilePlanId, setActiveAthleteProfilePlanId] = useState(null);
+  const [expandedAthleteProfilePlanId, setExpandedAthleteProfilePlanId] = useState(null);
+  const [athleteProfilePlanDetails, setAthleteProfilePlanDetails] = useState({});
+  const [athleteProfilePlanLoadingId, setAthleteProfilePlanLoadingId] = useState(null);
   const [athleteEditingId, setAthleteEditingId] = useState('');
   const [athleteCustomPlan, setAthleteCustomPlan] = useState(null);
   const [draggingMethodId, setDraggingMethodId] = useState(null);
@@ -363,6 +366,14 @@ function App() {
     if (!isCoachUser) return savedMonthlyPlans;
     return savedMonthlyPlans.filter((plan) => (plan.assignments || []).some((assignment) => assignment.athleteId === athleteId));
   }, [athleteId, isCoachUser, savedMonthlyPlans]);
+  const athleteAssignmentByPlanId = useMemo(() => (
+    Object.fromEntries(
+      athleteAssignedPlans.map((plan) => [
+        plan.id,
+        (plan.assignments || []).find((assignment) => assignment.athleteId === athleteId) || null
+      ])
+    )
+  ), [athleteAssignedPlans, athleteId]);
   const athleteCoachMessages = useMemo(() => (
     savedMonthlyPlans
       .flatMap((plan) => Object.values(plan.evaluationMap || {}).map((evaluation) => ({
@@ -503,6 +514,20 @@ function App() {
     setSelectedPlanId(planId);
     setActiveAthleteProfilePlanId(planId);
     await loadAthleteCustomization(String(targetAthleteId), planId);
+  };
+
+  const loadAthleteProfilePlanDetails = async (planId) => {
+    if (!athleteId || !planId) return;
+    setAthleteProfilePlanLoadingId(planId);
+    try {
+      const details = await api(`/api/monthly-plans/${planId}/athletes/${athleteId}`, { headers: { Authorization: `Bearer ${token}` } });
+      setAthleteProfilePlanDetails((prev) => ({ ...prev, [planId]: details }));
+      setExpandedAthleteProfilePlanId(planId);
+    } catch (err) {
+      setMessage(err.message);
+    } finally {
+      setAthleteProfilePlanLoadingId(null);
+    }
   };
 
   const loadAthleteCustomization = async (athleteIdValue, planIdOverride = null) => {
@@ -1082,6 +1107,12 @@ function App() {
       loadAthleteHistory().catch((err) => setMessage(err.message));
     }
   }, [mode, token, athleteId]);
+
+  useEffect(() => {
+    setExpandedAthleteProfilePlanId(null);
+    setAthleteProfilePlanDetails({});
+    setAthleteProfilePlanLoadingId(null);
+  }, [athleteId, mode]);
 
   useEffect(() => {
     if (token && isCoachUser && ['training-methods', 'training-objective-details', 'training-categories', 'athlete-categories', 'disciplines', 'training-exercises', 'general-master-data', 'coach-zone-config', 'monthly-plans', 'athlete-profile'].includes(mode)) {
@@ -2333,24 +2364,75 @@ Note: ${method.notes}` : ''}`}
                   <div className="subcard">
                     <h3>Tabelle assegnate atleta</h3>
                     {athleteAssignedPlans.length === 0 && <p>Nessuna tabella assegnata.</p>}
-                    {athleteAssignedPlans.map((plan) => (
-                      <div key={`profile-plan-${plan.id}`} className="profile-plan-row">
-                        <div>
-                          <strong>{plan.name}</strong>
-                          {isCoachUser && <small>{plan.customPlanApplied ? ' · personalizzata' : ' · base'}</small>}
-                        </div>
-                        {isCoachUser ? (
-                          <div className="actions">
-                            <button type="button" className="secondary" onClick={() => openAthleteProfilePlanCustomization(plan.id, athleteId)}>
-                              Personalizza qui
-                            </button>
-                            <button type="button" className="secondary" onClick={() => openPlanForAthleteCustomization(plan.id, athleteId)}>
-                              Apri editor completo
-                            </button>
+                    {athleteAssignedPlans.map((plan) => {
+                      const assignment = athleteAssignmentByPlanId[plan.id];
+                      const details = athleteProfilePlanDetails[plan.id] || null;
+                      const isExpanded = expandedAthleteProfilePlanId === plan.id;
+                      const isCustomized = details?.isCustomized ?? assignment?.hasCustomPlan ?? false;
+                      return (
+                        <div key={`profile-plan-${plan.id}`} className="subcard">
+                          <div className="profile-plan-row">
+                            <div>
+                              <strong>{plan.name}</strong>
+                              <small>{isCustomized ? ' · personalizzata' : ' · base assegnata'}</small>
+                            </div>
+                            <div className="actions">
+                              <button type="button" className="secondary" onClick={() => isExpanded ? setExpandedAthleteProfilePlanId(null) : loadAthleteProfilePlanDetails(plan.id)}>
+                                {isExpanded ? 'Nascondi tabella' : 'Visualizza tabella'}
+                              </button>
+                              {isCoachUser ? (
+                                <>
+                                  <button type="button" className="secondary" onClick={() => openAthleteProfilePlanCustomization(plan.id, athleteId)}>
+                                    Personalizza qui
+                                  </button>
+                                  <button type="button" className="secondary" onClick={() => openPlanForAthleteCustomization(plan.id, athleteId)}>
+                                    Apri editor completo
+                                  </button>
+                                </>
+                              ) : null}
+                            </div>
                           </div>
-                        ) : null}
-                      </div>
-                    ))}
+                          {athleteProfilePlanLoadingId === plan.id && <small>Caricamento tabella...</small>}
+                          {isExpanded && details && (
+                            <div className="monthly-plan-grid">
+                              {details.plan.map((week, weekIndex) => (
+                                <div key={`profile-view-week-${plan.id}-${weekIndex}`} className="subcard">
+                                  <strong>Settimana {weekIndex + 1}</strong>
+                                  <div className="week-grid">
+                                    {week.map((methodEntries, dayIndex) => (
+                                      <div key={`profile-view-day-${plan.id}-${weekIndex}-${dayIndex}`} className="week-day-dropzone">
+                                        <strong>{weekDays[dayIndex]}</strong>
+                                        <div className="day-methods">
+                                          {methodEntries.length === 0 && <small>Nessun metodo</small>}
+                                          {methodEntries.map((entry) => {
+                                            const methodId = normalizeDayEntry(entry).methodId;
+                                            const method = getMethodById(methodId);
+                                            if (!method) return null;
+                                            const evalKey = `${weekIndex}-${dayIndex}-${methodId}`;
+                                            const methodEval = details.evaluationMap?.[evalKey];
+                                            return (
+                                              <div key={`profile-view-method-${plan.id}-${weekIndex}-${dayIndex}-${methodId}`} className="placed-method">
+                                                <span>
+                                                  {method.code} · {method.name}
+                                                  <small>{compactMethodDetail(method)}</small>
+                                                  {methodEval && <small>✅ Valutazione: {methodEval.completionPct}% · {methodEval.wasCompleted ? 'effettuato' : 'non effettuato'}</small>}
+                                                  {methodEval?.notes && <small>📝 Note atleta: {methodEval.notes}</small>}
+                                                  {methodEval?.coachMessage && <small>💬 Coach: {methodEval.coachMessage}</small>}
+                                                </span>
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
 
                     {isCoachUser && athleteCustomPlan && activeAthleteProfilePlanId && selectedPlanId === activeAthleteProfilePlanId && (
                       <div className="subcard">
