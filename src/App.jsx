@@ -326,10 +326,20 @@ function App() {
   const [monthlyPlanName, setMonthlyPlanName] = useState('');
   const [savedMonthlyPlans, setSavedMonthlyPlans] = useState([]);
   const [selectedPlanId, setSelectedPlanId] = useState(null);
+  const [isMonthlyPlanEditorOpen, setIsMonthlyPlanEditorOpen] = useState(false);
+  const [expandedAthletePlanId, setExpandedAthletePlanId] = useState(null);
   const [athleteEditingId, setAthleteEditingId] = useState('');
   const [athleteCustomPlan, setAthleteCustomPlan] = useState(null);
   const [draggingMethodId, setDraggingMethodId] = useState(null);
   const [draggingFromCell, setDraggingFromCell] = useState(null);
+  const [methodSearchTerm, setMethodSearchTerm] = useState('');
+  const [methodMacroAreaFilter, setMethodMacroAreaFilter] = useState('all');
+  const [methodPeriodFilter, setMethodPeriodFilter] = useState('all');
+  const [methodTypeFilter, setMethodTypeFilter] = useState('all');
+  const [methodModeFilter, setMethodModeFilter] = useState('all');
+  const [methodObjectiveFilter, setMethodObjectiveFilter] = useState('all');
+  const [methodCategoryFilter, setMethodCategoryFilter] = useState('all');
+  const [methodDisciplineFilter, setMethodDisciplineFilter] = useState('all');
 
   const isEditing = useMemo(() => editingUserId !== null, [editingUserId]);
   const isCoachUser = currentUser?.userType === 'coach';
@@ -342,6 +352,42 @@ function App() {
     if (!isCoachUser) return savedMonthlyPlans;
     return savedMonthlyPlans.filter((plan) => (plan.assignments || []).some((assignment) => assignment.athleteId === athleteId));
   }, [athleteId, isCoachUser, savedMonthlyPlans]);
+
+  const filteredTrainingMethods = useMemo(() => {
+    const term = methodSearchTerm.trim().toLowerCase();
+
+    return trainingMethods.filter((method) => {
+      const matchesSearch = !term
+        || method.name?.toLowerCase().includes(term)
+        || method.code?.toLowerCase().includes(term);
+      const matchesMacroArea = methodMacroAreaFilter === 'all' || method.macroArea === methodMacroAreaFilter;
+      const matchesPeriod = methodPeriodFilter === 'all' || method.period === methodPeriodFilter;
+      const matchesType = methodTypeFilter === 'all' || method.methodType === methodTypeFilter;
+      const matchesMode = methodModeFilter === 'all' || method.trainingMode === methodModeFilter;
+      const matchesObjective = methodObjectiveFilter === 'all' || (method.objectiveDetailIds || []).includes(Number(methodObjectiveFilter));
+      const matchesCategory = methodCategoryFilter === 'all' || (method.categoryIds || []).includes(Number(methodCategoryFilter));
+      const matchesDiscipline = methodDisciplineFilter === 'all' || (method.disciplineIds || []).includes(Number(methodDisciplineFilter));
+
+      return matchesSearch
+        && matchesMacroArea
+        && matchesPeriod
+        && matchesType
+        && matchesMode
+        && matchesObjective
+        && matchesCategory
+        && matchesDiscipline;
+    });
+  }, [
+    trainingMethods,
+    methodSearchTerm,
+    methodMacroAreaFilter,
+    methodPeriodFilter,
+    methodTypeFilter,
+    methodModeFilter,
+    methodObjectiveFilter,
+    methodCategoryFilter,
+    methodDisciplineFilter
+  ]);
 
   const toggleMonthlyPlanAthlete = (athleteUserId) => {
     setMonthlyPlanAthleteIds((prev) => (
@@ -415,6 +461,7 @@ function App() {
 
   const loadPlanForEditing = (plan) => {
     setSelectedPlanId(plan.id);
+    setIsMonthlyPlanEditorOpen(true);
     setMonthlyPlanName(plan.name || '');
     setMonthlyPlan(plan.plan || createEmptyMonthlyPlan());
     setMonthlyPlanAthleteIds(plan.athleteIds || []);
@@ -922,10 +969,17 @@ function App() {
   };
 
   useEffect(() => {
-    if (token && (mode === 'users-list' || mode === 'profile')) {
+    if (token && (mode === 'users-list' || mode === 'profile' || (isCoachUser && mode === 'monthly-plans'))) {
       loadUsers().catch((err) => setMessage(err.message));
     }
-  }, [mode, token]);
+  }, [mode, token, isCoachUser]);
+
+  useEffect(() => {
+    if (mode !== 'monthly-plans') return;
+    setIsMonthlyPlanEditorOpen(false);
+    setSelectedPlanId(null);
+    setExpandedAthletePlanId(null);
+  }, [mode]);
 
   useEffect(() => {
     if (token && mode === 'athlete-profile' && athleteId) {
@@ -1366,7 +1420,7 @@ function App() {
               <button onClick={() => setMode('dashboard')}>Home</button>
               <button onClick={() => setMode(isCoachUser ? 'users-list' : 'profile')}>{isCoachUser ? 'Gestione utenti' : 'Gestione mio utente'}</button>
               {!isCoachUser && <button onClick={() => setMode('athlete-profile')}>Profilo atleta</button>}
-              {!isCoachUser && <button onClick={() => setMode('athlete-profile')}>Le mie tabelle</button>}
+              {!isCoachUser && <button onClick={() => setMode('monthly-plans')}>Le mie tabelle</button>}
               {isCoachUser && <button onClick={() => setMode('training-methods')}>Metodi allenamento</button>}
               {isCoachUser && <button onClick={() => setMode('monthly-plans')}>Tabelle mensili</button>}
               {isCoachUser && <button onClick={() => setMode('general-master-data')}>Anagrafiche campi generali</button>}
@@ -1595,7 +1649,7 @@ function App() {
             <section className="card">
               <div className="row">
                 <h2>Tabelle mensili allenamenti</h2>
-                {isCoachUser && <button type="button" className="secondary" onClick={() => { setMonthlyPlan(createEmptyMonthlyPlan()); setMonthlyPlanAthleteIds([]); setMonthlyPlanName(''); setSelectedPlanId(null); setAthleteEditingId(''); setAthleteCustomPlan(null); }}>Nuova tabella</button>}
+                {isCoachUser && <button type="button" className="secondary" onClick={() => { setMonthlyPlan(createEmptyMonthlyPlan()); setMonthlyPlanAthleteIds([]); setMonthlyPlanName(''); setSelectedPlanId(null); setAthleteEditingId(''); setAthleteCustomPlan(null); setIsMonthlyPlanEditorOpen(true); }}>Nuova tabella</button>}
               </div>
 
               {isCoachUser && (
@@ -1620,7 +1674,7 @@ function App() {
                     ))}
                   </div>
 
-                  <div className="monthly-plan-builder-layout">
+                  {isMonthlyPlanEditorOpen && <div className="monthly-plan-builder-layout">
                     <div className="subcard monthly-plan-editor-scroll">
                       <label>Nome tabella
                         <input value={monthlyPlanName} onChange={(e) => setMonthlyPlanName(e.target.value)} placeholder="Es. Preparazione febbraio 2026" />
@@ -1670,8 +1724,55 @@ Note: ${method.notes}` : ''}`}>
 
                     <div className="subcard sticky-panel monthly-method-panel">
                       <h3>Metodi disponibili (drag)</h3>
+                      <div className="edit-form">
+                        <label>Ricerca per nome/codice
+                          <input value={methodSearchTerm} onChange={(e) => setMethodSearchTerm(e.target.value)} placeholder="Cerca metodo..." />
+                        </label>
+                        <label>Macroarea
+                          <select value={methodMacroAreaFilter} onChange={(e) => setMethodMacroAreaFilter(e.target.value)}>
+                            <option value="all">Tutte</option>
+                            {macroAreas.map((item) => <option key={`mf-macro-${item.value}`} value={item.value}>{item.label}</option>)}
+                          </select>
+                        </label>
+                        <label>Periodo
+                          <select value={methodPeriodFilter} onChange={(e) => setMethodPeriodFilter(e.target.value)}>
+                            <option value="all">Tutti</option>
+                            {trainingPeriods.map((item) => <option key={`mf-period-${item.value}`} value={item.value}>{item.label}</option>)}
+                          </select>
+                        </label>
+                        <label>Tipologia
+                          <select value={methodTypeFilter} onChange={(e) => setMethodTypeFilter(e.target.value)}>
+                            <option value="all">Tutte</option>
+                            {trainingMethodTypes.map((item) => <option key={`mf-type-${item.value}`} value={item.value}>{item.label}</option>)}
+                          </select>
+                        </label>
+                        <label>Modalità
+                          <select value={methodModeFilter} onChange={(e) => setMethodModeFilter(e.target.value)}>
+                            <option value="all">Tutte</option>
+                            {trainingModes.map((item) => <option key={`mf-mode-${item.value}`} value={item.value}>{item.label}</option>)}
+                          </select>
+                        </label>
+                        <label>Dettaglio obiettivo
+                          <select value={methodObjectiveFilter} onChange={(e) => setMethodObjectiveFilter(e.target.value)}>
+                            <option value="all">Tutti</option>
+                            {trainingObjectiveDetails.map((item) => <option key={`mf-obj-${item.id}`} value={item.id}>{item.name}</option>)}
+                          </select>
+                        </label>
+                        <label>Categoria
+                          <select value={methodCategoryFilter} onChange={(e) => setMethodCategoryFilter(e.target.value)}>
+                            <option value="all">Tutte</option>
+                            {trainingCategories.map((item) => <option key={`mf-cat-${item.id}`} value={item.id}>{item.name}</option>)}
+                          </select>
+                        </label>
+                        <label>Disciplina
+                          <select value={methodDisciplineFilter} onChange={(e) => setMethodDisciplineFilter(e.target.value)}>
+                            <option value="all">Tutte</option>
+                            {disciplines.map((item) => <option key={`mf-disc-${item.id}`} value={item.id}>{item.name}</option>)}
+                          </select>
+                        </label>
+                      </div>
                       <div className="method-drag-list">
-                        {trainingMethods.map((method) => (
+                        {filteredTrainingMethods.map((method) => (
                           <button
                             key={`drag-method-${method.id}`}
                             type="button"
@@ -1687,9 +1788,11 @@ Note: ${method.notes}` : ''}`}
                             <small>{compactMethodDetail(method)}</small>
                           </button>
                         ))}
+                        {filteredTrainingMethods.length === 0 && <small>Nessun metodo corrisponde ai filtri selezionati.</small>}
                       </div>
                     </div>
-                  </div>
+                  </div>}
+                  {!isMonthlyPlanEditorOpen && <p>Seleziona una tabella salvata oppure clicca su <strong>Nuova tabella</strong> per vedere il dettaglio.</p>}
                 </>
               )}
 
@@ -1697,10 +1800,17 @@ Note: ${method.notes}` : ''}`}
                 <div>
                   <h3>Le tue tabelle assegnate</h3>
                   {savedMonthlyPlans.length === 0 && <p>Non hai ancora tabelle assegnate.</p>}
-                  {savedMonthlyPlans.map((plan) => (
+                  {savedMonthlyPlans.map((plan) => {
+                    const isExpanded = expandedAthletePlanId === plan.id;
+                    return (
                     <div key={`ath-plan-${plan.id}`} className="subcard">
-                      <h4>{plan.name}</h4>
-                      <div className="monthly-plan-grid">
+                      <div className="row">
+                        <h4>{plan.name}</h4>
+                        <button type="button" className="secondary" onClick={() => setExpandedAthletePlanId(isExpanded ? null : plan.id)}>
+                          {isExpanded ? 'Nascondi dettaglio' : 'Apri dettaglio'}
+                        </button>
+                      </div>
+                      {isExpanded && <div className="monthly-plan-grid">
                         {plan.plan.map((week, weekIndex) => (
                           <div key={`ath-week-${plan.id}-${weekIndex}`} className="subcard">
                             <strong>Settimana {weekIndex + 1}</strong>
@@ -1721,9 +1831,10 @@ Note: ${method.notes}` : ''}`}
                             </div>
                           </div>
                         ))}
-                      </div>
+                      </div>}
                     </div>
-                  ))}
+                  );
+                  })}
                 </div>
               )}
             </section>
