@@ -155,6 +155,11 @@ const createEmptyMonthlyPlan = () => (
   Array.from({ length: 4 }, () => Array.from({ length: 7 }, () => []))
 );
 
+const normalizeDayEntry = (entry) => ({
+  methodId: typeof entry === 'object' && entry !== null ? Number(entry.methodId) : Number(entry),
+  evaluation: typeof entry === 'object' && entry !== null && entry.evaluation ? entry.evaluation : null
+});
+
 const toTimeInputValue = (minutes, seconds) => {
   const safeMinutes = Math.max(0, Number(minutes) || 0);
   const safeSeconds = Math.max(0, Number(seconds) || 0);
@@ -340,6 +345,9 @@ function App() {
   const [methodObjectiveFilter, setMethodObjectiveFilter] = useState('all');
   const [methodCategoryFilter, setMethodCategoryFilter] = useState('all');
   const [methodDisciplineFilter, setMethodDisciplineFilter] = useState('all');
+  const [isMethodFilterModalOpen, setIsMethodFilterModalOpen] = useState(false);
+  const [dayInsertModal, setDayInsertModal] = useState(null);
+  const [evaluationModal, setEvaluationModal] = useState(null);
 
   const isEditing = useMemo(() => editingUserId !== null, [editingUserId]);
   const isCoachUser = currentUser?.userType === 'coach';
@@ -398,7 +406,7 @@ function App() {
   const clearMonthlyPlanCell = (weekIndex, dayIndex, methodId, useCustom = false) => {
     const updater = (prev) => prev.map((week, wIdx) => week.map((day, dIdx) => {
       if (wIdx !== weekIndex || dIdx !== dayIndex) return day;
-      return day.filter((id) => id !== methodId);
+      return day.filter((item) => normalizeDayEntry(item).methodId !== methodId);
     }));
 
     if (useCustom) {
@@ -419,8 +427,8 @@ function App() {
         base[fromWeek][fromDay] = base[fromWeek][fromDay].filter((id) => id !== methodId);
       }
 
-      if (!base[weekIndex][dayIndex].includes(draggingMethodId)) {
-        base[weekIndex][dayIndex].push(draggingMethodId);
+      if (!base[weekIndex][dayIndex].some((item) => normalizeDayEntry(item).methodId === draggingMethodId)) {
+        base[weekIndex][dayIndex].push({ methodId: draggingMethodId });
       }
       return base;
     };
@@ -463,7 +471,7 @@ function App() {
     setSelectedPlanId(plan.id);
     setIsMonthlyPlanEditorOpen(true);
     setMonthlyPlanName(plan.name || '');
-    setMonthlyPlan(plan.plan || createEmptyMonthlyPlan());
+    setMonthlyPlan((plan.plan || createEmptyMonthlyPlan()).map((week) => week.map((day) => day.map((item) => normalizeDayEntry(item)))));
     setMonthlyPlanAthleteIds(plan.athleteIds || []);
     setAthleteEditingId('');
     setAthleteCustomPlan(null);
@@ -487,10 +495,45 @@ function App() {
     }
     try {
       const data = await api(`/api/monthly-plans/${planIdToLoad}/athletes/${athleteIdValue}`, { headers: { Authorization: `Bearer ${token}` } });
-      setAthleteCustomPlan(data.plan || null);
+      setAthleteCustomPlan((data.plan || null)?.map((week) => week.map((day) => day.map((item) => normalizeDayEntry(item)))) || null);
     } catch (err) {
       setMessage(err.message);
       setAthleteCustomPlan(null);
+    }
+  };
+
+  const addMethodToDay = (weekIndex, dayIndex, methodId, useCustom = false) => {
+    if (!methodId && methodId !== 0) return;
+    const id = Number(methodId);
+    if (!Number.isInteger(id) || id <= 0) return;
+    const updater = (prev) => prev.map((week, wIdx) => week.map((day, dIdx) => {
+      if (wIdx !== weekIndex || dIdx !== dayIndex) return day;
+      if (day.some((item) => normalizeDayEntry(item).methodId === id)) return day;
+      return [...day, { methodId: id }];
+    }));
+
+    if (useCustom) {
+      setAthleteCustomPlan((prev) => (prev ? updater(prev) : prev));
+    } else {
+      setMonthlyPlan((prev) => updater(prev));
+    }
+  };
+
+  const submitMethodEvaluation = async (payload) => {
+    if (!payload?.planId || !currentUser?.id) return;
+    try {
+      const result = await api(`/api/monthly-plans/${payload.planId}/athletes/${currentUser.id}/evaluations`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      setSavedMonthlyPlans((prev) => prev.map((plan) => (
+        plan.id === payload.planId ? { ...plan, evaluationMap: result.evaluationMap || plan.evaluationMap } : plan
+      )));
+      setMessage('Valutazione salvata.');
+    } catch (err) {
+      setMessage(err.message);
     }
   };
 
@@ -1695,12 +1738,16 @@ function App() {
                           <div key={`week-${weekIndex}`} className="subcard">
                             <h3>Settimana {weekIndex + 1}</h3>
                             <div className="week-grid">
-                              {week.map((methodIds, dayIndex) => (
+                              {week.map((methodEntries, dayIndex) => (
                                 <div key={`day-${weekIndex}-${dayIndex}`} className="week-day-dropzone" onDragOver={(event) => event.preventDefault()} onDrop={() => onMonthlyPlanDrop(weekIndex, dayIndex)}>
-                                  <strong>{weekDays[dayIndex]}</strong>
+                                  <div className="row">
+                                    <strong>{weekDays[dayIndex]}</strong>
+                                    <button type="button" className="secondary" onClick={() => setDayInsertModal({ weekIndex, dayIndex, useCustom: false, selectedMethodId: '' })}>+</button>
+                                  </div>
                                   <div className="day-methods">
-                                    {methodIds.length === 0 && <small>Nessun metodo</small>}
-                                    {methodIds.map((methodId) => {
+                                    {methodEntries.length === 0 && <small>Nessun metodo</small>}
+                                    {methodEntries.map((entry) => {
+                                      const methodId = normalizeDayEntry(entry).methodId;
                                       const method = getMethodById(methodId);
                                       if (!method) return null;
                                       return (
@@ -1720,11 +1767,53 @@ Note: ${method.notes}` : ''}`}>
                         ))}
                       </div>
                       <button type="button" onClick={saveMonthlyPlan}>Salva/Assegna tabella</button>
+
+                      <div className="subcard">
+                        <h3>Personalizzazione singolo atleta</h3>
+                        <label>Atleta da personalizzare
+                          <select value={athleteEditingId} onChange={(e) => loadAthleteCustomization(e.target.value)}>
+                            <option value="">Seleziona atleta</option>
+                            {assignedAthletes.map((athlete) => <option key={`edit-ath-${athlete.id}`} value={athlete.id}>{athlete.firstName} {athlete.lastName}</option>)}
+                          </select>
+                        </label>
+
+                        {athleteCustomPlan && (
+                          <>
+                            <div className="monthly-plan-grid">
+                              {athleteCustomPlan.map((week, weekIndex) => (
+                                <div key={`custom-week-${weekIndex}`} className="subcard">
+                                  <h4>Settimana {weekIndex + 1}</h4>
+                                  <div className="week-grid">
+                                    {week.map((methodEntries, dayIndex) => (
+                                      <div key={`custom-day-${weekIndex}-${dayIndex}`} className="week-day-dropzone" onDragOver={(event) => event.preventDefault()} onDrop={() => onMonthlyPlanDrop(weekIndex, dayIndex, true)}>
+                                        <div className="row">
+                                          <strong>{weekDays[dayIndex]}</strong>
+                                          <button type="button" className="secondary" onClick={() => setDayInsertModal({ weekIndex, dayIndex, useCustom: true, selectedMethodId: '' })}>+</button>
+                                        </div>
+                                        <div className="day-methods">
+                                          {methodEntries.length === 0 && <small>Nessun metodo</small>}
+                                          {methodEntries.map((entry) => {
+                                            const methodId = normalizeDayEntry(entry).methodId;
+                                            const method = getMethodById(methodId);
+                                            if (!method) return null;
+                                            return <div key={`custom-m-${weekIndex}-${dayIndex}-${methodId}`} className="placed-method"><span>{method.code} · {method.name}</span><button type="button" className="danger" onClick={() => clearMonthlyPlanCell(weekIndex, dayIndex, methodId, true)}>x</button></div>;
+                                          })}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                            <button type="button" onClick={saveAthleteCustomization}>Salva personalizzazione atleta</button>
+                          </>
+                        )}
+                      </div>
                     </div>
 
                     <div className="subcard sticky-panel monthly-method-panel">
-                      <h3>Metodi disponibili (drag)</h3>
-                      <div className="edit-form">
+                      <div className="row"><h3>Metodi disponibili (drag)</h3><button type="button" className="secondary" onClick={() => setIsMethodFilterModalOpen(true)}>Filtri</button></div>
+                      {isMethodFilterModalOpen && <div className="modal-backdrop" role="dialog" aria-modal="true"><div className="modal-card"><div className="row"><h4>Filtri metodi</h4><button type="button" className="secondary" onClick={() => setIsMethodFilterModalOpen(false)}>Chiudi</button></div><div className="edit-form">
                         <label>Ricerca per nome/codice
                           <input value={methodSearchTerm} onChange={(e) => setMethodSearchTerm(e.target.value)} placeholder="Cerca metodo..." />
                         </label>
@@ -1770,7 +1859,7 @@ Note: ${method.notes}` : ''}`}>
                             {disciplines.map((item) => <option key={`mf-disc-${item.id}`} value={item.id}>{item.name}</option>)}
                           </select>
                         </label>
-                      </div>
+                      </div></div></div>}
                       <div className="method-drag-list">
                         {filteredTrainingMethods.map((method) => (
                           <button
@@ -1815,15 +1904,18 @@ Note: ${method.notes}` : ''}`}
                           <div key={`ath-week-${plan.id}-${weekIndex}`} className="subcard">
                             <strong>Settimana {weekIndex + 1}</strong>
                             <div className="week-grid">
-                              {week.map((methodIds, dayIndex) => (
+                              {week.map((methodEntries, dayIndex) => (
                                 <div key={`ath-day-${plan.id}-${weekIndex}-${dayIndex}`} className="week-day-dropzone">
                                   <strong>{weekDays[dayIndex]}</strong>
                                   <div className="day-methods">
-                                    {methodIds.length === 0 && <small>Nessun metodo</small>}
-                                    {methodIds.map((methodId) => {
+                                    {methodEntries.length === 0 && <small>Nessun metodo</small>}
+                                    {methodEntries.map((entry) => {
+                                      const methodId = normalizeDayEntry(entry).methodId;
                                       const method = getMethodById(methodId);
                                       if (!method) return null;
-                                      return <div key={`ath-method-${plan.id}-${weekIndex}-${dayIndex}-${methodId}`} className="placed-method"><span>{method.code} · {method.name}<small>{compactMethodDetail(method)}</small></span></div>;
+                                      const evalKey = `${weekIndex}-${dayIndex}-${methodId}`;
+                                      const methodEval = plan.evaluationMap?.[evalKey];
+                                      return <div key={`ath-method-${plan.id}-${weekIndex}-${dayIndex}-${methodId}`} className="placed-method"><span>{method.code} · {method.name}<small>{compactMethodDetail(method)}</small>{methodEval && <small>Valutato: {methodEval.completionPct}%</small>}</span><button type="button" className="secondary" onClick={() => setEvaluationModal({ planId: plan.id, weekIndex, dayIndex, methodId, methodName: `${method.code} · ${method.name}`, performedAt: methodEval?.performedAt || new Date().toISOString().slice(0, 10), liking: methodEval?.liking || 3, difficulty: methodEval?.difficulty || 3, perceivedFatigue: methodEval?.perceivedFatigue || 3, eveningRecovery: methodEval?.eveningRecovery || 3, nextDayRecovery: methodEval?.nextDayRecovery || 3, completionPct: methodEval?.completionPct ?? 100, notes: methodEval?.notes || '' })}>Aggiungi valutazione</button></div>;
                                     })}
                                   </div>
                                 </div>
@@ -2188,6 +2280,46 @@ Note: ${method.notes}` : ''}`}
             </section>
           )}
         </>
+      )}
+
+      {dayInsertModal && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal-card">
+            <div className="row">
+              <h4>Aggiungi metodo a {weekDays[dayInsertModal.dayIndex]}</h4>
+              <button type="button" className="secondary" onClick={() => setDayInsertModal(null)}>Chiudi</button>
+            </div>
+            <label>Metodo
+              <select value={dayInsertModal.selectedMethodId} onChange={(e) => setDayInsertModal((prev) => ({ ...prev, selectedMethodId: e.target.value }))}>
+                <option value="">Seleziona</option>
+                {filteredTrainingMethods.map((method) => <option key={`ins-${method.id}`} value={method.id}>{method.code} · {method.name}</option>)}
+              </select>
+            </label>
+            <button type="button" onClick={() => { addMethodToDay(dayInsertModal.weekIndex, dayInsertModal.dayIndex, dayInsertModal.selectedMethodId, dayInsertModal.useCustom); setDayInsertModal(null); }}>Inserisci metodo</button>
+          </div>
+        </div>
+      )}
+
+      {evaluationModal && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal-card">
+            <div className="row">
+              <h4>Valutazione metodo: {evaluationModal.methodName}</h4>
+              <button type="button" className="secondary" onClick={() => setEvaluationModal(null)}>Chiudi</button>
+            </div>
+            <div className="edit-form">
+              <label>Data effettuazione<input type="date" value={evaluationModal.performedAt} onChange={(e) => setEvaluationModal((prev) => ({ ...prev, performedAt: e.target.value }))} /></label>
+              <label>Gradimento (1-5)<input type="number" min="1" max="5" value={evaluationModal.liking} onChange={(e) => setEvaluationModal((prev) => ({ ...prev, liking: Number(e.target.value) }))} /></label>
+              <label>Difficoltà (1-5)<input type="number" min="1" max="5" value={evaluationModal.difficulty} onChange={(e) => setEvaluationModal((prev) => ({ ...prev, difficulty: Number(e.target.value) }))} /></label>
+              <label>Percezione fatica (1-5)<input type="number" min="1" max="5" value={evaluationModal.perceivedFatigue} onChange={(e) => setEvaluationModal((prev) => ({ ...prev, perceivedFatigue: Number(e.target.value) }))} /></label>
+              <label>Recupero sera (1-5)<input type="number" min="1" max="5" value={evaluationModal.eveningRecovery} onChange={(e) => setEvaluationModal((prev) => ({ ...prev, eveningRecovery: Number(e.target.value) }))} /></label>
+              <label>Recupero giorno successivo (1-5)<input type="number" min="1" max="5" value={evaluationModal.nextDayRecovery} onChange={(e) => setEvaluationModal((prev) => ({ ...prev, nextDayRecovery: Number(e.target.value) }))} /></label>
+              <label>% svolgimento<input type="number" min="0" max="100" value={evaluationModal.completionPct} onChange={(e) => setEvaluationModal((prev) => ({ ...prev, completionPct: Number(e.target.value) }))} /></label>
+              <label>Note<textarea value={evaluationModal.notes} onChange={(e) => setEvaluationModal((prev) => ({ ...prev, notes: e.target.value }))} /></label>
+              <button type="button" onClick={async () => { await submitMethodEvaluation(evaluationModal); setEvaluationModal(null); }}>Salva valutazione</button>
+            </div>
+          </div>
+        </div>
       )}
     </main>
   );

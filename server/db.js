@@ -323,5 +323,30 @@ db.exec(`
 db.exec('CREATE INDEX IF NOT EXISTS monthly_plans_coach_idx ON monthly_plans(coach_id, updated_at DESC, id DESC);');
 db.exec('CREATE INDEX IF NOT EXISTS monthly_plan_assignments_athlete_idx ON monthly_plan_assignments(athlete_id, updated_at DESC);');
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS athlete_method_evaluations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id INTEGER NOT NULL,
+    athlete_id INTEGER NOT NULL,
+    week_index INTEGER NOT NULL,
+    day_index INTEGER NOT NULL,
+    method_id INTEGER NOT NULL,
+    performed_at TEXT NOT NULL,
+    liking INTEGER NOT NULL,
+    difficulty INTEGER NOT NULL,
+    perceived_fatigue INTEGER NOT NULL,
+    evening_recovery INTEGER NOT NULL,
+    next_day_recovery INTEGER NOT NULL,
+    completion_pct REAL NOT NULL,
+    notes TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (plan_id, athlete_id) REFERENCES monthly_plan_assignments(plan_id, athlete_id) ON DELETE CASCADE,
+    FOREIGN KEY (method_id) REFERENCES training_methods(id) ON DELETE CASCADE
+  );
+`);
+
+db.exec('CREATE INDEX IF NOT EXISTS athlete_method_eval_lookup_idx ON athlete_method_evaluations(plan_id, athlete_id, week_index, day_index, method_id);');
+
 
 export default db;
