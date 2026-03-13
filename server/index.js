@@ -1704,14 +1704,33 @@ app.get('/api/monthly-plans', auth, (req, res) => {
   try {
     if (isCoach(req.user)) {
       const rows = db.prepare('SELECT * FROM monthly_plans WHERE coach_id = ? ORDER BY updated_at DESC, id DESC').all(req.user.id);
-      const assignments = db.prepare('SELECT plan_id AS planId, athlete_id AS athleteId FROM monthly_plan_assignments WHERE plan_id IN (SELECT id FROM monthly_plans WHERE coach_id = ?)').all(req.user.id);
+      const assignments = db.prepare(`
+        SELECT a.plan_id AS planId, a.athlete_id AS athleteId, a.custom_plan_json AS customPlanJson,
+               u.first_name AS firstName, u.last_name AS lastName
+        FROM monthly_plan_assignments a
+        JOIN users u ON u.id = a.athlete_id
+        WHERE a.plan_id IN (SELECT id FROM monthly_plans WHERE coach_id = ?)
+      `).all(req.user.id);
       const athleteMapByPlan = assignments.reduce((acc, row) => {
         acc[row.planId] = acc[row.planId] || [];
         acc[row.planId].push(row.athleteId);
         return acc;
       }, {});
+      const assignmentDetailsByPlan = assignments.reduce((acc, row) => {
+        acc[row.planId] = acc[row.planId] || [];
+        acc[row.planId].push({
+          athleteId: row.athleteId,
+          athleteName: [row.firstName, row.lastName].filter(Boolean).join(' ').trim(),
+          hasCustomPlan: !!row.customPlanJson
+        });
+        return acc;
+      }, {});
 
-      return res.json(rows.map((row) => ({ ...mapMonthlyPlan(row), athleteIds: athleteMapByPlan[row.id] || [] })));
+      return res.json(rows.map((row) => ({
+        ...mapMonthlyPlan(row),
+        athleteIds: athleteMapByPlan[row.id] || [],
+        assignments: assignmentDetailsByPlan[row.id] || []
+      })));
     }
 
     const assignmentRows = db.prepare(`
