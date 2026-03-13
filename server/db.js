@@ -348,5 +348,20 @@ db.exec(`
 
 db.exec('CREATE INDEX IF NOT EXISTS athlete_method_eval_lookup_idx ON athlete_method_evaluations(plan_id, athlete_id, week_index, day_index, method_id);');
 
+const athleteMethodEvaluationColumns = db.prepare('PRAGMA table_info(athlete_method_evaluations)').all();
+const existingAthleteMethodEvaluationColumns = new Set(athleteMethodEvaluationColumns.map((column) => column.name));
+
+if (!existingAthleteMethodEvaluationColumns.has('was_completed')) {
+  db.exec('ALTER TABLE athlete_method_evaluations ADD COLUMN was_completed INTEGER NOT NULL DEFAULT 1;');
+}
+
+if (!existingAthleteMethodEvaluationColumns.has('coach_message')) {
+  db.exec('ALTER TABLE athlete_method_evaluations ADD COLUMN coach_message TEXT;');
+}
+
+if (!existingAthleteMethodEvaluationColumns.has('coach_message_updated_at')) {
+  db.exec('ALTER TABLE athlete_method_evaluations ADD COLUMN coach_message_updated_at TEXT;');
+}
+
 
 export default db;

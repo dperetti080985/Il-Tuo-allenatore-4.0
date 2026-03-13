@@ -348,6 +348,8 @@ function App() {
   const [isMethodFilterModalOpen, setIsMethodFilterModalOpen] = useState(false);
   const [dayInsertModal, setDayInsertModal] = useState(null);
   const [evaluationModal, setEvaluationModal] = useState(null);
+  const [coachEvaluations, setCoachEvaluations] = useState([]);
+  const [coachMessageDraftByEvaluation, setCoachMessageDraftByEvaluation] = useState({});
 
   const isEditing = useMemo(() => editingUserId !== null, [editingUserId]);
   const isCoachUser = currentUser?.userType === 'coach';
@@ -521,8 +523,9 @@ function App() {
 
   const submitMethodEvaluation = async (payload) => {
     if (!payload?.planId || !currentUser?.id) return;
+    const targetAthleteId = payload.athleteId || currentUser.id;
     try {
-      const result = await api(`/api/monthly-plans/${payload.planId}/athletes/${currentUser.id}/evaluations`, {
+      const result = await api(`/api/monthly-plans/${payload.planId}/athletes/${targetAthleteId}/evaluations`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -532,6 +535,39 @@ function App() {
         plan.id === payload.planId ? { ...plan, evaluationMap: result.evaluationMap || plan.evaluationMap } : plan
       )));
       setMessage('Valutazione salvata.');
+      if (isCoachUser) await loadCoachEvaluations();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const deleteMethodEvaluation = async (payload) => {
+    if (!payload?.planId || !payload?.athleteId || !payload?.evaluationId) return;
+    try {
+      const result = await api(`/api/monthly-plans/${payload.planId}/athletes/${payload.athleteId}/evaluations/${payload.evaluationId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      setSavedMonthlyPlans((prev) => prev.map((plan) => (
+        plan.id === payload.planId ? { ...plan, evaluationMap: result.evaluationMap || {} } : plan
+      )));
+      setMessage('Valutazione eliminata.');
+      if (isCoachUser) await loadCoachEvaluations();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  };
+
+  const saveCoachMessage = async (evaluationId) => {
+    try {
+      const updated = await api(`/api/coach/evaluations/${evaluationId}/message`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ coachMessage: coachMessageDraftByEvaluation[evaluationId] || '' })
+      });
+      setCoachEvaluations((prev) => prev.map((item) => item.id === evaluationId ? { ...item, coachMessage: updated.coachMessage, coachMessageUpdatedAt: updated.coachMessageUpdatedAt } : item));
+      setMessage('Messaggio coach salvato.');
     } catch (err) {
       setMessage(err.message);
     }
@@ -1043,6 +1079,12 @@ function App() {
     }
   }, [mode, token]);
 
+  useEffect(() => {
+    if (token && isCoachUser && mode === 'dashboard') {
+      loadCoachEvaluations().catch((err) => setMessage(err.message));
+    }
+  }, [mode, token, isCoachUser]);
+
   const handleLogin = async (e) => {
     e.preventDefault();
     setMessage('');
@@ -1279,6 +1321,15 @@ function App() {
     setSavedMonthlyPlans(data || []);
   };
 
+  const loadCoachEvaluations = async (authToken = token) => {
+    if (!isCoachUser) return;
+    const data = await api('/api/coach/evaluations', { headers: { Authorization: `Bearer ${authToken}` } });
+    setCoachEvaluations(data || []);
+    setCoachMessageDraftByEvaluation((data || []).reduce((acc, item) => {
+      acc[item.id] = item.coachMessage || '';
+      return acc;
+    }, {}));
+  };
 
   const formatIntervalSummary = (interval, trainingMode) => {
     if (trainingMode === 'in_bici') {
@@ -1470,7 +1521,33 @@ function App() {
             </div>
           </section>
 
-          {mode === 'dashboard' && <section className="card"><h2>Home</h2><p>Pagina momentaneamente vuota.</p></section>}
+          {mode === 'dashboard' && (
+            <section className="card">
+              <h2>Home</h2>
+              {isCoachUser ? (
+                <>
+                  <h3>Valutazioni atleti</h3>
+                  {coachEvaluations.length === 0 && <p>Nessuna valutazione inserita dagli atleti.</p>}
+                  <div className="coach-evaluation-list">
+                    {coachEvaluations.map((item) => (
+                      <div key={`coach-eval-${item.id}`} className="subcard">
+                        <div className="row"><strong>{item.athleteName || `Atleta #${item.athleteId}`}</strong><small>{item.planName}</small></div>
+                        <small>{weekDays[item.dayIndex]} · Settimana {item.weekIndex + 1} · {item.methodCode} · {item.methodName}</small>
+                        <small>{item.wasCompleted ? '✅ Effettuato' : '❌ Non effettuato'} · Completamento {item.completionPct}%</small>
+                        {item.notes && <small>Note atleta: {item.notes}</small>}
+                        <label>Messaggio coach
+                          <textarea value={coachMessageDraftByEvaluation[item.id] || ''} onChange={(e) => setCoachMessageDraftByEvaluation((prev) => ({ ...prev, [item.id]: e.target.value }))} />
+                        </label>
+                        <button type="button" onClick={() => saveCoachMessage(item.id)}>Salva messaggio</button>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <p>Benvenuto! Consulta le tue tabelle mensili e le eventuali note del coach.</p>
+              )}
+            </section>
+          )}
 
           {(mode === 'users-list' || mode === 'profile' || mode === 'users-create') && (
             <section className="card">
@@ -1915,7 +1992,7 @@ Note: ${method.notes}` : ''}`}
                                       if (!method) return null;
                                       const evalKey = `${weekIndex}-${dayIndex}-${methodId}`;
                                       const methodEval = plan.evaluationMap?.[evalKey];
-                                      return <div key={`ath-method-${plan.id}-${weekIndex}-${dayIndex}-${methodId}`} className="placed-method"><span>{method.code} · {method.name}<small>{compactMethodDetail(method)}</small>{methodEval && <small>Valutato: {methodEval.completionPct}%</small>}</span><button type="button" className="secondary" onClick={() => setEvaluationModal({ planId: plan.id, weekIndex, dayIndex, methodId, methodName: `${method.code} · ${method.name}`, performedAt: methodEval?.performedAt || new Date().toISOString().slice(0, 10), liking: methodEval?.liking || 3, difficulty: methodEval?.difficulty || 3, perceivedFatigue: methodEval?.perceivedFatigue || 3, eveningRecovery: methodEval?.eveningRecovery || 3, nextDayRecovery: methodEval?.nextDayRecovery || 3, completionPct: methodEval?.completionPct ?? 100, notes: methodEval?.notes || '' })}>Aggiungi valutazione</button></div>;
+                                      return <div key={`ath-method-${plan.id}-${weekIndex}-${dayIndex}-${methodId}`} className="placed-method"><span>{method.code} · {method.name}<small>{compactMethodDetail(method)}</small>{methodEval && <small>✅ Valutato: {methodEval.completionPct}% · {methodEval.wasCompleted ? 'effettuato' : 'non effettuato'}</small>}{methodEval?.coachMessage && <small>💬 Coach: {methodEval.coachMessage}</small>}</span><div className="actions"><button type="button" className={methodEval ? 'success' : 'secondary'} onClick={() => setEvaluationModal({ planId: plan.id, athleteId: currentUser.id, weekIndex, dayIndex, methodId, methodName: `${method.code} · ${method.name}`, performedAt: methodEval?.performedAt || new Date().toISOString().slice(0, 10), liking: methodEval?.liking || 3, difficulty: methodEval?.difficulty || 3, perceivedFatigue: methodEval?.perceivedFatigue || 3, eveningRecovery: methodEval?.eveningRecovery || 3, nextDayRecovery: methodEval?.nextDayRecovery || 3, completionPct: methodEval?.completionPct ?? 100, wasCompleted: methodEval?.wasCompleted ?? true, notes: methodEval?.notes || '', evaluationId: methodEval?.id || null })}>{methodEval ? 'Visualizza valutazione' : 'Aggiungi valutazione'}</button>{methodEval && <button type="button" className="danger" onClick={() => deleteMethodEvaluation({ planId: plan.id, athleteId: currentUser.id, evaluationId: methodEval.id })}>Elimina</button>}</div></div>;
                                     })}
                                   </div>
                                 </div>
@@ -2314,6 +2391,7 @@ Note: ${method.notes}` : ''}`}
               <label>Percezione fatica (1-5)<input type="number" min="1" max="5" value={evaluationModal.perceivedFatigue} onChange={(e) => setEvaluationModal((prev) => ({ ...prev, perceivedFatigue: Number(e.target.value) }))} /></label>
               <label>Recupero sera (1-5)<input type="number" min="1" max="5" value={evaluationModal.eveningRecovery} onChange={(e) => setEvaluationModal((prev) => ({ ...prev, eveningRecovery: Number(e.target.value) }))} /></label>
               <label>Recupero giorno successivo (1-5)<input type="number" min="1" max="5" value={evaluationModal.nextDayRecovery} onChange={(e) => setEvaluationModal((prev) => ({ ...prev, nextDayRecovery: Number(e.target.value) }))} /></label>
+              <label><input type="checkbox" checked={Boolean(evaluationModal.wasCompleted)} onChange={(e) => setEvaluationModal((prev) => ({ ...prev, wasCompleted: e.target.checked }))} /> Allenamento effettuato</label>
               <label>% svolgimento<input type="number" min="0" max="100" value={evaluationModal.completionPct} onChange={(e) => setEvaluationModal((prev) => ({ ...prev, completionPct: Number(e.target.value) }))} /></label>
               <label>Note<textarea value={evaluationModal.notes} onChange={(e) => setEvaluationModal((prev) => ({ ...prev, notes: e.target.value }))} /></label>
               <button type="button" onClick={async () => { await submitMethodEvaluation(evaluationModal); setEvaluationModal(null); }}>Salva valutazione</button>
