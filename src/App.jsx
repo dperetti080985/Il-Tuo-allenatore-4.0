@@ -336,6 +336,12 @@ function App() {
   const athleteId = isCoachUser ? selectedAthleteId : currentUser?.id;
   const athleteUsers = useMemo(() => users.filter((u) => u.userType === 'athlete'), [users]);
   const assignedAthletes = useMemo(() => athleteUsers.filter((ath) => monthlyPlanAthleteIds.includes(ath.id)), [athleteUsers, monthlyPlanAthleteIds]);
+  const athleteFullNameById = useMemo(() => Object.fromEntries(athleteUsers.map((athlete) => [athlete.id, `${athlete.firstName} ${athlete.lastName}`.trim()])), [athleteUsers]);
+  const athleteAssignedPlans = useMemo(() => {
+    if (!athleteId) return [];
+    if (!isCoachUser) return savedMonthlyPlans;
+    return savedMonthlyPlans.filter((plan) => (plan.assignments || []).some((assignment) => assignment.athleteId === athleteId));
+  }, [athleteId, isCoachUser, savedMonthlyPlans]);
 
   const toggleMonthlyPlanAthlete = (athleteUserId) => {
     setMonthlyPlanAthleteIds((prev) => (
@@ -416,14 +422,24 @@ function App() {
     setAthleteCustomPlan(null);
   };
 
-  const loadAthleteCustomization = async (athleteIdValue) => {
+  const openPlanForAthleteCustomization = async (planId, targetAthleteId = null) => {
+    const plan = savedMonthlyPlans.find((item) => item.id === planId);
+    if (!plan) return;
+    loadPlanForEditing(plan);
+    setMode('monthly-plans');
+    if (!targetAthleteId) return;
+    await loadAthleteCustomization(String(targetAthleteId), planId);
+  };
+
+  const loadAthleteCustomization = async (athleteIdValue, planIdOverride = null) => {
     setAthleteEditingId(athleteIdValue);
-    if (!athleteIdValue || !selectedPlanId) {
+    const planIdToLoad = planIdOverride || selectedPlanId;
+    if (!athleteIdValue || !planIdToLoad) {
       setAthleteCustomPlan(null);
       return;
     }
     try {
-      const data = await api(`/api/monthly-plans/${selectedPlanId}/athletes/${athleteIdValue}`, { headers: { Authorization: `Bearer ${token}` } });
+      const data = await api(`/api/monthly-plans/${planIdToLoad}/athletes/${athleteIdValue}`, { headers: { Authorization: `Bearer ${token}` } });
       setAthleteCustomPlan(data.plan || null);
     } catch (err) {
       setMessage(err.message);
@@ -925,7 +941,7 @@ function App() {
 
 
   useEffect(() => {
-    if (token && mode === 'monthly-plans') {
+    if (token && (mode === 'monthly-plans' || mode === 'athlete-profile')) {
       loadMonthlyPlans().catch((err) => setMessage(err.message));
     }
   }, [mode, token]);
@@ -1350,7 +1366,7 @@ function App() {
               <button onClick={() => setMode('dashboard')}>Home</button>
               <button onClick={() => setMode(isCoachUser ? 'users-list' : 'profile')}>{isCoachUser ? 'Gestione utenti' : 'Gestione mio utente'}</button>
               {!isCoachUser && <button onClick={() => setMode('athlete-profile')}>Profilo atleta</button>}
-              {!isCoachUser && <button onClick={() => setMode('monthly-plans')}>Le mie tabelle</button>}
+              {!isCoachUser && <button onClick={() => setMode('athlete-profile')}>Le mie tabelle</button>}
               {isCoachUser && <button onClick={() => setMode('training-methods')}>Metodi allenamento</button>}
               {isCoachUser && <button onClick={() => setMode('monthly-plans')}>Tabelle mensili</button>}
               {isCoachUser && <button onClick={() => setMode('general-master-data')}>Anagrafiche campi generali</button>}
@@ -1585,12 +1601,31 @@ function App() {
               {isCoachUser && (
                 <>
                   <p>La lista metodi resta sempre visibile durante lo scroll. Puoi trascinare dal catalogo e anche da un giorno all'altro.</p>
-                  <label>Nome tabella
-                    <input value={monthlyPlanName} onChange={(e) => setMonthlyPlanName(e.target.value)} placeholder="Es. Preparazione febbraio 2026" />
-                  </label>
 
-                  <div className="monthly-plan-layout">
-                    <div className="subcard sticky-panel">
+                  <div className="monthly-plan-saved-list subcard">
+                    <h3>Tabelle salvate</h3>
+                    {savedMonthlyPlans.length === 0 && <small>Nessuna tabella salvata</small>}
+                    {savedMonthlyPlans.map((plan) => (
+                      <button key={`saved-plan-${plan.id}`} type="button" className={`plan-list-row ${selectedPlanId === plan.id ? 'active' : ''}`} onClick={() => loadPlanForEditing(plan)}>
+                        <span className="plan-list-name">{plan.name}</span>
+                        <span className="plan-list-athletes">
+                          {(plan.assignments || []).length === 0 && <small>Nessun atleta assegnato</small>}
+                          {(plan.assignments || []).map((assignment) => (
+                            <span key={`plan-assignment-${plan.id}-${assignment.athleteId}`} className="plan-athlete-pill">
+                              {assignment.hasCustomPlan ? '★ ' : ''}{assignment.athleteName || athleteFullNameById[assignment.athleteId] || `Atleta #${assignment.athleteId}`}
+                            </span>
+                          ))}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="monthly-plan-builder-layout">
+                    <div className="subcard monthly-plan-editor-scroll">
+                      <label>Nome tabella
+                        <input value={monthlyPlanName} onChange={(e) => setMonthlyPlanName(e.target.value)} placeholder="Es. Preparazione febbraio 2026" />
+                      </label>
+
                       <h3>Atleti assegnati</h3>
                       <div className="check-list">
                         {athleteUsers.map((athlete) => (
@@ -1601,6 +1636,39 @@ function App() {
                         ))}
                       </div>
 
+                      <div className="monthly-plan-grid">
+                        {monthlyPlan.map((week, weekIndex) => (
+                          <div key={`week-${weekIndex}`} className="subcard">
+                            <h3>Settimana {weekIndex + 1}</h3>
+                            <div className="week-grid">
+                              {week.map((methodIds, dayIndex) => (
+                                <div key={`day-${weekIndex}-${dayIndex}`} className="week-day-dropzone" onDragOver={(event) => event.preventDefault()} onDrop={() => onMonthlyPlanDrop(weekIndex, dayIndex)}>
+                                  <strong>{weekDays[dayIndex]}</strong>
+                                  <div className="day-methods">
+                                    {methodIds.length === 0 && <small>Nessun metodo</small>}
+                                    {methodIds.map((methodId) => {
+                                      const method = getMethodById(methodId);
+                                      if (!method) return null;
+                                      return (
+                                        <div key={`placed-${weekIndex}-${dayIndex}-${methodId}`} className="placed-method" draggable onDragStart={() => { setDraggingMethodId(methodId); setDraggingFromCell({ weekIndex, dayIndex, methodId }); }} onDragEnd={() => { setDraggingMethodId(null); setDraggingFromCell(null); }} title={`${compactMethodDetail(method)}${method.notes ? `
+
+Note: ${method.notes}` : ''}`}>
+                                          <span>{method.code} · {method.name}<small>{compactMethodDetail(method)}</small></span>
+                                          <button type="button" className="danger" onClick={() => clearMonthlyPlanCell(weekIndex, dayIndex, methodId)}>x</button>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <button type="button" onClick={saveMonthlyPlan}>Salva/Assegna tabella</button>
+                    </div>
+
+                    <div className="subcard sticky-panel monthly-method-panel">
                       <h3>Metodi disponibili (drag)</h3>
                       <div className="method-drag-list">
                         {trainingMethods.map((method) => (
@@ -1620,89 +1688,8 @@ Note: ${method.notes}` : ''}`}
                           </button>
                         ))}
                       </div>
-                      <button type="button" onClick={saveMonthlyPlan}>Salva/Assegna tabella</button>
-                    </div>
-
-                    <div className="subcard">
-                      <h3>Tabelle salvate</h3>
-                      <div className="day-methods">
-                        {savedMonthlyPlans.length === 0 && <small>Nessuna tabella salvata</small>}
-                        {savedMonthlyPlans.map((plan) => (
-                          <button key={`saved-plan-${plan.id}`} type="button" className="secondary" onClick={() => loadPlanForEditing(plan)}>
-                            {plan.name}
-                          </button>
-                        ))}
-                      </div>
                     </div>
                   </div>
-
-                  <div className="monthly-plan-grid">
-                    {monthlyPlan.map((week, weekIndex) => (
-                      <div key={`week-${weekIndex}`} className="subcard">
-                        <h3>Settimana {weekIndex + 1}</h3>
-                        <div className="week-grid">
-                          {week.map((methodIds, dayIndex) => (
-                            <div key={`day-${weekIndex}-${dayIndex}`} className="week-day-dropzone" onDragOver={(event) => event.preventDefault()} onDrop={() => onMonthlyPlanDrop(weekIndex, dayIndex)}>
-                              <strong>{weekDays[dayIndex]}</strong>
-                              <div className="day-methods">
-                                {methodIds.length === 0 && <small>Nessun metodo</small>}
-                                {methodIds.map((methodId) => {
-                                  const method = getMethodById(methodId);
-                                  if (!method) return null;
-                                  return (
-                                    <div key={`placed-${weekIndex}-${dayIndex}-${methodId}`} className="placed-method" draggable onDragStart={() => { setDraggingMethodId(methodId); setDraggingFromCell({ weekIndex, dayIndex, methodId }); }} onDragEnd={() => { setDraggingMethodId(null); setDraggingFromCell(null); }} title={`${compactMethodDetail(method)}${method.notes ? `
-
-Note: ${method.notes}` : ''}`}>
-                                      <span>{method.code} · {method.name}<small>{compactMethodDetail(method)}</small></span>
-                                      <button type="button" className="danger" onClick={() => clearMonthlyPlanCell(weekIndex, dayIndex, methodId)}>x</button>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  {selectedPlanId && (
-                    <div className="subcard">
-                      <h3>Personalizzazione per singolo atleta</h3>
-                      <label>Atleta
-                        <select value={athleteEditingId} onChange={(e) => loadAthleteCustomization(e.target.value)}>
-                          <option value="">Seleziona atleta assegnato</option>
-                          {athleteUsers.filter((ath) => monthlyPlanAthleteIds.includes(ath.id)).map((ath) => <option key={`ath-custom-${ath.id}`} value={ath.id}>{ath.firstName} {ath.lastName}</option>)}
-                        </select>
-                      </label>
-                      {athleteCustomPlan && (
-                        <>
-                          <div className="monthly-plan-grid">
-                            {athleteCustomPlan.map((week, weekIndex) => (
-                              <div key={`custom-week-${weekIndex}`} className="subcard">
-                                <h4>Settimana {weekIndex + 1}</h4>
-                                <div className="week-grid">
-                                  {week.map((methodIds, dayIndex) => (
-                                    <div key={`custom-day-${weekIndex}-${dayIndex}`} className="week-day-dropzone" onDragOver={(event) => event.preventDefault()} onDrop={() => onMonthlyPlanDrop(weekIndex, dayIndex, true)}>
-                                      <strong>{weekDays[dayIndex]}</strong>
-                                      <div className="day-methods">
-                                        {methodIds.map((methodId) => {
-                                          const method = getMethodById(methodId);
-                                          if (!method) return null;
-                                          return <div key={`custom-placed-${weekIndex}-${dayIndex}-${methodId}`} className="placed-method" draggable onDragStart={() => { setDraggingMethodId(methodId); setDraggingFromCell({ weekIndex, dayIndex, methodId }); }} onDragEnd={() => { setDraggingMethodId(null); setDraggingFromCell(null); }}><span>{method.code} · {method.name}</span><button type="button" className="danger" onClick={() => clearMonthlyPlanCell(weekIndex, dayIndex, methodId, true)}>x</button></div>;
-                                        })}
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                          <button type="button" onClick={saveAthleteCustomization}>Salva personalizzazione atleta</button>
-                        </>
-                      )}
-                    </div>
-                  )}
                 </>
               )}
 
@@ -2033,6 +2020,25 @@ Note: ${method.notes}` : ''}`}>
                       {editingSnapshotId && <button type="button" className="secondary" onClick={cancelSnapshotEditing}>Annulla modifica</button>}
                     </div>
                   </form>
+
+
+                  <div className="subcard">
+                    <h3>Tabelle assegnate atleta</h3>
+                    {athleteAssignedPlans.length === 0 && <p>Nessuna tabella assegnata.</p>}
+                    {athleteAssignedPlans.map((plan) => (
+                      <div key={`profile-plan-${plan.id}`} className="profile-plan-row">
+                        <div>
+                          <strong>{plan.name}</strong>
+                          {isCoachUser && <small>{plan.customPlanApplied ? ' · personalizzata' : ' · base'}</small>}
+                        </div>
+                        {isCoachUser ? (
+                          <button type="button" className="secondary" onClick={() => openPlanForAthleteCustomization(plan.id, athleteId)}>
+                            Personalizza tabella
+                          </button>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
 
                   <h3>Storico inserimenti</h3>
                   <TrainingChart history={athleteHistory} metricKey="weightKg" title="Andamento peso" color="#0ea5e9" />

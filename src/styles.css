@@ -317,3 +317,79 @@ td {
   color: #334155;
   font-size: 12px;
 }
+
+
+.monthly-plan-saved-list {
+  margin-bottom: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.plan-list-row {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.plan-list-row.active {
+  outline: 2px solid #2563eb;
+}
+
+.plan-list-name {
+  font-weight: 700;
+}
+
+.plan-list-athletes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.plan-athlete-pill {
+  border: 1px solid #94a3b8;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+  background: #f8fafc;
+}
+
+.monthly-plan-builder-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 12px;
+  align-items: start;
+}
+
+.monthly-plan-editor-scroll {
+  max-height: 78vh;
+  overflow-y: auto;
+}
+
+.monthly-method-panel .method-drag-list {
+  display: grid;
+}
+
+.profile-plan-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid #e5e7eb;
+  padding: 8px 0;
+}
+
+@media (max-width: 960px) {
+  .monthly-plan-builder-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .monthly-plan-editor-scroll {
+    max-height: none;
+    overflow: visible;
+  }
+}
